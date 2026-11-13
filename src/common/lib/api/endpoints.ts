@@ -1,0 +1,21 @@
+export const API_ENDPOINTS = {
+    csrfCookie: '/sanctum/csrf-cookie',
+    login: '/login',
+    logout: '/logout',
+    register: '/register',
+    forgotPassword: '/forgot-password',
+    resetPassword: '/reset-password',
+    confirmPassword: '/user/confirm-password',
+    emailVerificationNotification: '/email/verification-notification',
+    user: '/api/user',
+    profile: '/api/settings/profile',
+    password: '/api/settings/password',
+    twoFactor: {
+        enable: '/user/two-factor-authentication',
+        disable: '/user/two-factor-authentication',
+        confirm: '/user/confirmed-two-factor-authentication',
+        qrCode: '/user/two-factor-qr-code',
+        secretKey: '/user/two-factor-secret-key',
+        recoveryCodes: '/user/two-factor-recovery-codes',
+    },
+} as const;

@@ -1,0 +1,22 @@
+import { useMutation, useQueryClient } from '@tanstack/react-query';
+import type { TRegisterCredentials } from '@/context.auth/_domain/model.schemas.credentials';
+import { register } from '@/context.auth/data/register';
+import { AUTH_QUERY_KEY } from './use-auth';
+
+export function useRegister({ onSuccess }: { onSuccess?: () => void } = {}) {
+    const queryClient = useQueryClient();
+
+    const { mutateAsync, isPending, error } = useMutation({
+        mutationFn: (data: TRegisterCredentials) => register({ data }),
+        onSuccess: async () => {
+            await queryClient.invalidateQueries({ queryKey: AUTH_QUERY_KEY });
+            onSuccess?.();
+        },
+    });
+
+    return {
+        registerUser: mutateAsync,
+        isRegistering: isPending,
+        registerError: error,
+    };
+}

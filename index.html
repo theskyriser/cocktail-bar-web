@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>Cocktail Bar</title>
+
+        <link rel="icon" href="/favicon.ico" sizes="any" />
+        <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+        <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+
+        <link rel="preconnect" href="https://fonts.bunny.net" />
+        <link
+            href="https://fonts.bunny.net/css?family=cormorant-garamond:400,600|lora:400,500"
+            rel="stylesheet"
+        />
+
+        <script>
+            (function () {
+                try {
+                    const appearance =
+                        localStorage.getItem('appearance') ?? 'system';
+                    const prefersDark = window.matchMedia(
+                        '(prefers-color-scheme: dark)',
+                    ).matches;
+
+                    if (
+                        appearance === 'dark' ||
+                        (appearance === 'system' && prefersDark)
+                    ) {
+                        document.documentElement.classList.add('dark');
+                    }
+                } catch {}
+            })();
+        </script>
+
+        <style>
+            html {
+                background-color: #f3f2f2;
+            }
+
+            html.dark {
+                background-color: #2d2b2b;
+            }
+        </style>
+    </head>
+    <body>
+        <div id="root"></div>
+        <script type="module" src="/src/main.tsx"></script>
+    </body>
+</html>
