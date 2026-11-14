@@ -30,7 +30,7 @@ file on architecture and process.
 | Routing | React Router v8 (`createBrowserRouter`), route objects in `src/app/router.tsx`, paths in `src/app/routes.ts` |
 | Server state | TanStack Query v5 — **the only cache** |
 | Forms | React Hook Form + `@hookform/resolvers/zod` |
-| Validation | Zod v4 — schemas are the source of truth for forms *and* API responses |
+| Validation | Hand-written parsers at the wire; Zod v4 for form input only |
 | UI | Tailwind 4, Radix primitives via shadcn, `lucide-react`, `sonner`, `cva` + `tailwind-merge` |
 | Build / lint / format / test | `vite-plus` (`vp`) — one tool for all four |
 | Tests | **Vitest** + React Testing Library, `*.test.ts(x)` beside the code |
@@ -106,8 +106,9 @@ The root `CLAUDE.md` is the authority, but these two decide most code review out
 
 1. **No interpretation logic in React.** No scoring, ranking, tier derivation, substitution
    guessing or unit arithmetic on measures. The API computes; this app renders.
-2. **Every API response is parsed by a Zod schema** in the data layer, and every request goes
-   through `fetchApi`. No bare `fetch` or `axios` in a hook or component.
+2. **Every API response is parsed by a hand-written parser** from the owning context's
+   `_domain/`, and every request goes through `fetchApi`. No bare `fetch` or `axios` in a hook or
+   component, and no Zod at the wire — it is for form input only.
 
 ## Rule files
 

@@ -226,7 +226,7 @@ argue for in a PR, not a convenience.
 
 ```
 context.<domain>/data/getFoo.ts
-   └─ fetchApi(path, { method, body, schema, signal })      # common/lib/api/client.ts
+   └─ fetchApi(path, { method, body, parse, signal })       # common/lib/api/client.ts
         └─ cocktail-bar-api  (cookie session + XSRF header)
 ```
 
@@ -239,9 +239,11 @@ context.<domain>/data/getFoo.ts
    it is a precondition repair rather than a flaky-network retry.
 3. **Error shaping.** `422` → `ValidationError` with `errors`; `401` → `UnauthenticatedError`;
    anything else → `ApiError` with `status`. Components never branch on a raw status code.
-4. **Parsing.** With a `schema`, the response is `schema.parse(…)`d and the return type is
-   inferred from it. Without one, the call resolves to `null` — which is correct for the API's
-   many `204`s.
+4. **Parsing.** With a `parse` function, the response body is run through it and the return type
+   is inferred from what it returns. Without one, the call resolves to `null` — which is correct
+   for the API's many `204`s, and a silent type lie on anything that returns data. Parsers are
+   hand-written and live in the owning context's `_domain/`; Zod is for form input only (root
+   `CLAUDE.md` § *Schemas at the wire, Zod for forms*).
 
 **`credentials: 'include'` plus cookie auth is why there is no token anywhere in this app.**
 Nothing is read from or written to `localStorage` for auth; the browser holds the session. In

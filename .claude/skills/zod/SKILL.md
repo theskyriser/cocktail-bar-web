@@ -5,6 +5,17 @@ description: Zod schema validation best practices for type safety, parsing, and 
 
 # Zod Best Practices
 
+> **Scope in `cocktail-bar-web`: form input only.** Zod validates what the user
+> types — React Hook Form through `@hookform/resolvers/zod`, one schema per form
+> in the owning context's `_domain/` as `model.schemas.<thing>.ts`. It is **not**
+> used at the wire: API responses go through hand-written parsers
+> (`model.parsers.<thing>.ts`), and nothing that touches a response imports Zod.
+> See the root `CLAUDE.md` § *Schemas at the wire, Zod for forms* for why, and
+> `.claude/skills/react-frontend/rules/layered-architecture.md` for the parser
+> shape. The `parse-`/`type-` rules below are still worth reading for the
+> *argument* — parse at the boundary, derive types, never trust JSON — which is
+> this repo's reasoning too; only the mechanism differs.
+
 Comprehensive schema validation guide for Zod in TypeScript applications. Contains 43 rules across 8 categories, prioritized by impact to guide automated refactoring and code generation.
 
 ## When to Apply

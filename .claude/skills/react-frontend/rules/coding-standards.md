@@ -12,15 +12,17 @@ paths:
   explicit `!== undefined` when the distinction matters.
 - Prefer `??` over `||` when defaulting. `||` also swallows `0` and `''`, which is wrong for a
   measure or a name field: `amountOnHand ?? 0` is right, `amountOnHand || 0` hides a real zero.
-- Zod does the distinguishing at the boundary: `.nullable()` means the API sends `null`,
-  `.optional()` means the key may be absent, `.nullish()` means either. Pick deliberately — the
-  schema is the documentation of what the API actually does.
+- At the wire, the **type and its parser** do the distinguishing: `string | null` means the API
+  sends `null`, `field?: string` means the key may be absent, and the parser has to actually check
+  which. The declared type is the documentation of what the API does, so make it say the true
+  thing rather than the convenient one. In **form** schemas Zod carries the same distinction —
+  `.nullable()`, `.optional()`, `.nullish()` — and the same instruction to pick deliberately.
 
 ## API Fetch Typing
 
-- **Do not pass an explicit generic to `fetchApi`.** It infers its return type from the `schema`
-  argument, so `fetchApi<TUser>(…)` is both redundant and a lie waiting to happen — restating the
-  inferred type silently rots when the schema changes.
+- **Do not pass an explicit generic to `fetchApi`.** It infers its return type from the `parse`
+  function's return type, so `fetchApi<TUser>(…)` is both redundant and a lie waiting to happen —
+  restating the inferred type silently rots when the parser changes.
 - Type the *provider function's* return instead (`Promise<TUser | null>`). That is the contract
   hooks and components rely on, and it is checked against what the adapter returns.
 

@@ -37,8 +37,8 @@ call out in the PR.
   authorisation bug delivered over a socket.
 - **Realtime is an enhancement, never a source of truth.** Treat an event as a signal to
   `invalidateQueries`, and let TanStack Query refetch. Writing the event payload straight into the
-  cache means trusting a message you did not validate with a Zod schema, and in this app the
-  server owns every decision that matters.
+  cache means trusting a message that never went through a parser at a boundary, and in this app
+  the server owns every decision that matters.
 - **The feature must work correctly if the socket never connects.** Flaky networks, blocked
   WebSockets on corporate proxies and a cold backend are all normal. Build the polling or
   on-focus-refetch path first and layer realtime on top.
