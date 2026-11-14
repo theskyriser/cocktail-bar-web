@@ -1,6 +1,9 @@
 import AppLogoIcon from '@/common/components/app-logo-icon';
+import { Button } from '@/common/components/ui/button';
 import { useDocumentTitle } from '@/common/hooks/use-document-title';
 import { APP_NAME } from '@/common/lib/app-name';
+import { Link } from 'react-router';
+import { ROUTES } from '../routes';
 
 export default function Welcome() {
     useDocumentTitle();
@@ -16,6 +19,9 @@ export default function Welcome() {
                     Tell it what you have on the shelf, and it works out what
                     you can pour.
                 </p>
+                <Link to={ROUTES.login}>
+                    <Button>Login</Button>
+                </Link>
             </div>
         </div>
     );
