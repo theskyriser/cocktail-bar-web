@@ -15,14 +15,14 @@ components/  (View)      React components — render UI, handle interaction
      │
      ├──> hooks/  (Hook) useQuery / useMutation, React state, cache invalidation
      │         │
-     │         └──> data/  (Data)   fetchApi + Zod schema + adapters — no React
+     │         └──> data/  (Data)   fetchApi + parser + adapters — no React
      │                  │
-     └──> _domain/ <────┘ (Domain)  Zod schemas, types, pure functions — no React, no fetch
+     └──> _domain/ <────┘ (Domain)  parsers, form schemas, types, pure functions — no React, no fetch
 ```
 
 ```
 src/context.<domain>/
-  _domain/        <- schemas, derived types, enums, pure functions
+  _domain/        <- wire parsers, form schemas, derived types, enums, pure functions
   data/           <- provider functions, adapters
   hooks/          <- one query or one mutation per hook
   components/     <- thin views
@@ -46,7 +46,7 @@ The data layer is the **anti-corruption layer** between the API and the domain.
 
 | Allowed | Forbidden |
 |---|---|
-| `fetchApi` calls with a Zod `schema` | Business rules |
+| `fetchApi` calls with a `parse` function | Business rules |
 | Adapter transformations (API shape → domain shape) | React imports |
 | Reading paths from `API_ENDPOINTS` | UI, JSX, classNames |
 
@@ -59,7 +59,7 @@ export async function getBarMatches(opts: {
     signal?: AbortSignal;
 }): Promise<TBarMatches> {
     const response = await fetchApi(API_ENDPOINTS.barMatches(opts.data.barId), {
-        schema: barMatchesSchema,
+        parse: parseBarMatches,
         signal: opts.signal,
     });
 
@@ -69,14 +69,18 @@ export async function getBarMatches(opts: {
 
 **Rules:**
 
-- Every provider that expects a body MUST pass a Zod `schema`. Without one `fetchApi` resolves to
-  `null`, which is correct for the API's `204`s and wrong for anything else.
+- Every provider that expects a body MUST pass a `parse` function. Without one `fetchApi` resolves
+  to `null`, which is correct for the API's `204`s and wrong for anything else. That is the only
+  thing distinguishing "no body expected" from "body unchecked", so omitting `parse` on an endpoint
+  that returns data is a silent type lie.
 - Accept `signal` and pass it through, so TanStack Query can abort the request on unmount.
 - Take arguments as a single `opts` object with a `data` key, matching `getUser` / `login`.
 - The adapter is the **only** place API shapes become domain shapes. Components and hooks never
   see a raw API shape.
 - Never call `fetch` or `axios` directly — always `fetchApi`, so CSRF, the 419 retry, error
   shaping and parsing all apply (see [app-structure.md](app-structure.md) §7).
+- The parser lives in `_domain/`, not here. `data/` chooses which parser to pass; it does not
+  define the shape.
 - Read paths from `API_ENDPOINTS`, never a string literal.
 
 ### Domain layer (`_domain/`)
@@ -85,34 +89,45 @@ Defines the **shape of the data** and **pure logic**. Zero React, zero network.
 
 | Allowed | Forbidden |
 |---|---|
-| Zod schemas (`model.schemas.*.ts`) | React (`useState`, `useEffect`, JSX) |
-| Types derived via `z.infer` | `fetch`, `fetchApi`, any I/O |
+| Wire parsers (`model.parsers.*.ts`) | React (`useState`, `useEffect`, JSX) |
+| Zod schemas for **forms** (`model.schemas.*.ts`) | `fetch`, `fetchApi`, any I/O |
+| Hand-written API/domain types, and form types via `z.infer` | A cast standing in for a check |
 | Enum constants + label / icon / class maps | classNames beyond semantic token strings in a map |
 | Pure functions | Side effects of any kind |
 
-The file-naming convention in this project is `model.schemas.<thing>.ts`, holding **both** shapes
-when they differ — `src/context.auth/_domain/model.schemas.user.ts` is the example:
+Two naming conventions, because there are two mechanisms (root `CLAUDE.md`
+§ *Schemas at the wire, Zod for forms*):
+
+- `model.parsers.<thing>.ts` — the API shape, the parser that proves it, and the domain shape
+  when it differs. `src/context.auth/_domain/model.parsers.user.ts` is the shape to build.
+- `model.schemas.<thing>.ts` — Zod, **forms only**.
 
 ```ts
-export const userSchema = z.object({            // the API shape: snake_case, ISO strings
-    id: z.number(),
-    email_verified_at: z.string().nullable(),
-    created_at: z.string(),
-});
+// model.parsers.user.ts — types hand-written, parser annotated, nothing cast
+export type TUserType = {            // the API shape: snake_case, ISO strings
+    id: number;
+    email_verified_at: string | null;
+    created_at: string;
+};
 
-export const userResourceSchema = z.object({    // the domain shape: camelCase, Date
-    id: z.number(),
-    emailVerifiedAt: z.date().nullable(),
-    createdAt: z.date(),
-});
+export type TUser = {                // the domain shape: camelCase, Date
+    id: number;
+    emailVerifiedAt: Date | null;
+    createdAt: Date;
+};
 
-export type TUserType = z.infer<typeof userSchema>;      // API
-export type TUser = z.infer<typeof userResourceSchema>;   // domain
+export function parseUser(input: unknown): TUserType;
 ```
 
 **Rules:**
 
-- Zod schemas are the **single source of truth**. Types are always derived via
+- **A parser never casts.** `return input as TUserType` type-checks and proves nothing.
+  Construct and return a new object field by field so TypeScript enforces that every field of
+  the declared type is actually produced — then adding a field to `TUserType` fails to compile
+  until the parser reads it. This one rule is what keeps a hand-written parser honest.
+- **A parser throws on a shape it does not recognise**, naming the offending field. A wire
+  mismatch is a bug to surface at the boundary, not a `null` to thread through the UI.
+- For **form** schemas Zod remains the single source of truth, and the type is derived via
   `z.infer<typeof schema>`, never hand-written alongside.
 - The `TFooType` / `TFoo` pair names the API shape and the domain shape. Keep the suffix
   convention — it is how a reader knows which side of the adapter they are on.
@@ -236,8 +251,8 @@ export const MATCH_TIER = {
     ONE_SHORT: 'ONE_SHORT',
 } as const;
 
-export const matchTierEnum = z.enum(MATCH_TIER);
-export type TMatchTier = z.infer<typeof matchTierEnum>;
+export type TMatchTier = (typeof MATCH_TIER)[keyof typeof MATCH_TIER];
+export function parseMatchTier(input: unknown): TMatchTier;
 
 export const MATCH_TIER_LABEL_MAP = {
     [MATCH_TIER.MAKEABLE]: 'Ready to make',
@@ -261,9 +276,10 @@ omission a compile error instead of an `undefined` on screen.
   const` preserves the literal types; `satisfies` enforces exhaustiveness. Neither alone does
   both.
 - Components read from maps; they never branch on a raw enum value.
-- **Zod v4 note:** this project is on Zod 4, where `z.enum()` accepts a const object directly.
-  Older examples (and plenty of blog posts) use `z.nativeEnum()`, which is deprecated — and
-  `.merge()` on object schemas is likewise superseded by `.extend()`.
+- **Zod v4 note, for form schemas only:** this project is on Zod 4, where `z.enum()` accepts a
+  const object directly. Older examples (and plenty of blog posts) use `z.nativeEnum()`, which is
+  deprecated — and `.merge()` on object schemas is superseded by `.extend()`. None of it applies
+  at the wire, where the mechanism is a parser.
 - Important: a map keyed by match tier renders a decision the **API** made. Deriving the tier
   itself in TypeScript is forbidden by the root `CLAUDE.md`. The map turns a server answer into
   pixels; it does not compute the answer.
@@ -279,7 +295,7 @@ Component
   └─ useBarMatches(barId)                       hooks/use-bar-matches.ts
        └─ useQuery({ queryKey: BAR_MATCHES_QUERY_KEY(barId), queryFn })
             └─ getBarMatches({ data: { barId }, signal })   data/getBarMatches.ts
-                 └─ fetchApi(path, { schema })              → Zod parses
+                 └─ fetchApi(path, { parse })               → parser validates
                       └─ barMatchesAdapter(response)        → domain shape
 ```
 
@@ -349,8 +365,9 @@ Use the **least powerful tool** that solves the problem:
 
 ## 6. Domain modelling (no classes)
 
-Model with **Zod schemas + inferred types + pure functions**, not classes. The schema carries the
-validation rules, the type carries the shape, functions carry the behaviour.
+Model with **types + parsers + pure functions**, not classes. The type carries the shape, the
+parser proves the wire kept to it, and functions carry the behaviour. (Form schemas are Zod and
+carry their own validation rules.)
 
 ```ts
 // _domain/model.util.measure.ts
@@ -426,16 +443,26 @@ Vitest + React Testing Library, `*.test.ts(x)` beside the code.
 
 | Layer | Test | Needs |
 |---|---|---|
-| `_domain/` | Pure unit tests — schema `safeParse`, pure functions | nothing |
+| `_domain/` | Pure unit tests — parser accept/reject, form schema `safeParse`, pure functions | nothing |
 | `data/` | Adapter tests: nullable fields, date parsing, key renames | nothing |
 | `hooks/` | Behaviour against a mocked provider | a `QueryClientProvider` wrapper |
 | `components/` | RTL: what the user sees and does | providers + router wrapper |
 
 ```ts
-// _domain/model.schemas.credentials.test.ts — the existing example
+// _domain/model.schemas.credentials.test.ts — a form schema
 it('rejects a password shorter than the minimum', () => {
     expect(loginSchema.safeParse({ email: 'a@b.c', password: '' }).success).toBe(false);
 });
+```
+
+A parser is tested the same way from the other direction — a list of payloads the server must
+never be allowed to get away with:
+
+```ts
+// _domain/model.parsers.user.test.ts
+it('throws when created_at is absent');
+it('accepts a null email_verified_at');
+it('throws when id arrives as a string');
 ```
 
 **Rules:**
@@ -458,7 +485,9 @@ it('rejects a password shorter than the minimum', () => {
 |---|---|---|
 | `fetchApi` in a component | Couples the view to the network | Provider in `data/`, consumed through a hook |
 | Bare `fetch` / `axios` anywhere | Skips CSRF, the 419 retry, error shaping and parsing | `fetchApi` |
-| A provider with no `schema` | Unvalidated API data reaches the UI | Pass the Zod schema |
+| A provider with no `parse` | Unvalidated API data reaches the UI | Pass the endpoint's parser |
+| `input as TFooType` inside a parser | Type-checks while proving nothing | Construct the object field by field |
+| Zod at the wire | Form messages are not contract checks; two jobs, one library | A parser in `_domain/` |
 | Recomputing a match tier, score or ranking | The API owns interpretation | Render the tier you were given |
 | Unit arithmetic on a measure | ml / oz / parts drift and `parts` is not a volume | Display what the server sent |
 | A hardcoded ingredient or substitution list | Second source of truth; will drift from the database | Fetch it |
@@ -481,11 +510,13 @@ it('rejects a password shorter than the minimum', () => {
 
 ## 11. Checklist before completing a feature
 
-- [ ] Schemas and types in `_domain/` as `model.schemas.*.ts`, types via `z.infer`
+- [ ] Response types and parsers in `_domain/` as `model.parsers.*.ts`; form schemas as
+      `model.schemas.*.ts` with types via `z.infer`
 - [ ] API shape and domain shape distinguished (`TFooType` / `TFoo`) where they differ
-- [ ] A provider per endpoint in `data/`, each passing a Zod schema and accepting `signal`
+- [ ] A provider per endpoint in `data/`, each passing its `parse` and accepting `signal`
 - [ ] Path added to `API_ENDPOINTS`, not written at the call site
 - [ ] An adapter where shapes differ, with a test for its nullable and date branches
+- [ ] A reject test per field the parser validates, and no cast in the parser
 - [ ] One query or one mutation per hook, domain-friendly return names, query key exported
 - [ ] Components take hooks and domain types only — no data-layer import, no inline rules
 - [ ] No interpretation logic: no tier derivation, scoring, ranking or measure arithmetic

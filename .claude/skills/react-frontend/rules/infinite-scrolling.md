@@ -19,21 +19,24 @@ Laravel returns the same meta for every paginated endpoint, so declare it once i
 (`src/common/lib/api/pagination.ts` when the first one lands) and compose it per resource:
 
 ```ts
-export const paginationMetaSchema = z.object({
-    current_page: z.number(),
-    last_page: z.number(),
-    per_page: z.number(),
-    total: z.number(),
-});
+export type TPaginationMeta = {
+    current_page: number;
+    last_page: number;
+    per_page: number;
+    total: number;
+};
 
-export function paginatedSchema<T extends ZodType>(item: T) {
-    return z.object({ data: z.array(item), meta: paginationMetaSchema });
-}
+export type TPaginated<T> = { data: T[]; meta: TPaginationMeta };
+
+export function parsePaginated<T>(
+    parseItem: (input: unknown) => T,
+): (input: unknown) => TPaginated<T>;
 ```
 
 Re-declaring the meta per feature is duplication that drifts the moment Laravel's shape changes.
-Note the keys stay **snake_case** here, because this schema describes the API shape; the adapter
-is what renames them.
+Note the keys stay **snake_case** here, because this type describes the API shape; the adapter is
+what renames them. `parsePaginated` is a higher-order parser — it takes the item parser and
+returns one for the envelope, which is how parsers compose without a schema library.
 
 ## 2. The provider takes a page
 
@@ -50,7 +53,7 @@ export async function getRecipes(opts: {
     }
 
     const response = await fetchApi(`${API_ENDPOINTS.recipes}?${params}`, {
-        schema: paginatedSchema(recipeSchema),
+        parse: parsePaginated(parseRecipe),
         signal: opts.signal,
     });
 
@@ -152,7 +155,7 @@ dependency, so it needs approval; do not reach for it before a list is actually 
 
 ## Rules
 
-- A paginated provider is a normal provider: `fetchApi`, a schema, a `signal`, an adapter.
+- A paginated provider is a normal provider: `fetchApi`, a `parse`, a `signal`, an adapter.
 - Every filter that changes the result set goes in the query key.
 - Flatten pages in the hook; return domain-friendly names.
 - `getNextPageParam` must return `undefined` at the end.

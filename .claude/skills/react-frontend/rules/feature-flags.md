@@ -29,7 +29,7 @@ export function useAuthConfig(): { authConfig: TAuthConfig } {
 
 Three properties to copy:
 
-1. **A provider in `data/`** with a Zod schema, like any other endpoint.
+1. **A provider in `data/`** with a parser, like any other endpoint.
 2. **`staleTime: Infinity`** — configuration does not change mid-session, so refetching it is
    noise. A flag flipped server-side reaches the user on their next load, which is the normal
    expectation for a deploy-free toggle.

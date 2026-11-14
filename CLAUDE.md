@@ -141,9 +141,9 @@ export async function getBarMatches(opts: {
 // body: the shared client, then the adapter — I write this
 ```
 
-Also allowed: a type or zod schema's field list, a file tree of what I am about
-to create, a function name with its parameters, an `it('…')` title list for the
-tests I should write.
+Also allowed: a type's field list, a parser's or form schema's signature, a file
+tree of what I am about to create, a function name with its parameters, an
+`it('…')` title list for the tests I should write.
 
 **Not** allowed: the filled-in body, the whole file, anything runnable, or the
 same implementation smuggled across several messages a line at a time. If an
@@ -232,7 +232,7 @@ to do them.
 | Routing | React Router (`react-router` v8) — `createBrowserRouter`, route objects in `src/app/router.tsx`, paths in `src/app/routes.ts` |
 | Server state | TanStack Query v5. **The only cache.** No Redux, no Zustand yet |
 | Forms | React Hook Form + `@hookform/resolvers/zod` |
-| Validation | Zod v4 — **form input only.** API responses are typed, not parsed; see § *Zod is for forms, not for the wire* |
+| Validation | Hand-written parsers at the wire; Zod v4 for **form input only** — see § *Schemas at the wire, Zod for forms* |
 | UI | Tailwind 4, Radix primitives via shadcn (`components.json`, new-york, neutral), `lucide-react` icons, `sonner` toasts, `class-variance-authority` + `tailwind-merge` |
 | Theme | The **Classical** design system — Cormorant Garamond / Lora, `#b68235` accent, 2–7px radii. Fonts load from Bunny Fonts in `index.html` |
 | Build / lint / test | `vite-plus` (`vp`) — one tool for dev server, build, lint, format and Vitest |
@@ -325,7 +325,7 @@ src/
 ├── app/guards/               # RequireAuth, GuestOnly — mine to write
 ├── common/lib/api/           # the fetch client, errors, endpoints — mine to write
 └── context.<name>/
-    ├── _domain/              # zod schemas, types — no React, no fetch
+    ├── _domain/              # parsers, form schemas, types — no React, no fetch
     ├── data/                 # provider functions + adapters — no React
     ├── hooks/                # one query or one mutation per hook
     └── components/           # forms and views
@@ -343,7 +343,7 @@ components/ ──> hooks/ ──> _domain/
 
 | Layer | Allowed | Forbidden |
 |---|---|---|
-| `_domain/` | zod schemas, derived types, pure functions, label/icon maps | React, `fetch`, JSX, classNames |
+| `_domain/` | wire parsers, form schemas, derived types, pure functions, label/icon maps | React, `fetch`, JSX, classNames |
 | `data/` | calls through the shared fetch client, adapters | business rules, React, UI |
 | `hooks/` | `useQuery`/`useMutation`, React state, cache invalidation | raw `fetch`, business rules, JSX |
 | `components/` | JSX, hooks, theme classes | fetching, inline business logic, hardcoded colours |
@@ -400,8 +400,8 @@ Three traps, all of which show up first as a tempting bit of client code:
 
 ### Shape of a new feature's data layer
 
-A provider function per endpoint and, where the API shape differs from the
-domain shape, an adapter:
+A provider function per endpoint, a parser for the response body, and — where
+the API shape differs from the domain shape — an adapter:
 
 ```ts
 // src/context.bar/data/getBarMatches.ts
@@ -409,33 +409,59 @@ export async function getBarMatches(opts: {
     data: { barId: number };
     signal?: AbortSignal;
 }): Promise<TBarMatches>
-// body: the shared client, then the adapter
+// body: the shared client with `parse: parseBarMatches`, then the adapter
 ```
 
-The adapter is the **only** place API shapes (snake_case keys, ISO date strings)
-become domain shapes (camelCase, `Date`). Components and hooks never see a raw
-API shape, and the adapter is the layer worth unit-testing: it is pure, so it
-needs no query client and no network stub.
+The parser is the runtime boundary (§ *Schemas at the wire, Zod for forms*). The
+adapter is the **only** place API shapes (snake_case keys, ISO date strings)
+become domain shapes (camelCase, `Date`); components and hooks never see a raw
+API shape. Both are the layers worth unit-testing: they are pure, so they need no
+query client and no network stub.
 
-### Zod is for forms, not for the wire
+### Schemas at the wire, Zod for forms
 
-Decided on 2026-11-14, reversing the stripped repo's original design. Zod stays a
-dependency and stays the source of truth for **form input** — React Hook Form
-through `@hookform/resolvers/zod`, one schema per form in the context's
-`_domain/`. It is **not** used to parse API responses.
+Decided on 2026-11-14 and **revised the same day**. Responses are parsed at the
+boundary — but not by Zod. Two mechanisms, deliberately different:
 
-The cost is explicit and worth naming out loud, because an interviewer will push
-on it: an unparsed response means the response type is a **claim, not a
-guarantee**. `Promise<TBarMatches>` says what the API promised, and TypeScript
-erases at runtime, so a renamed field ships as `undefined` and surfaces as a
-blank cell or a crash deep in a component rather than as one loud error at the
-boundary. That is the trade *parse don't validate* exists to avoid.
+- **The wire is parsed by hand-written parsers.** One
+  `parse<Thing>(input: unknown): T<Thing>Type` per endpoint, in the context's
+  `_domain/` as `model.parsers.<thing>.ts`. Every provider expecting a response
+  body passes one to the client as `parse`.
+- **Forms are validated by Zod.** React Hook Form through
+  `@hookform/resolvers/zod`, one schema per form in the context's `_domain/` as
+  `model.schemas.<thing>.ts`. Nothing that touches a response imports Zod.
 
-What makes it tolerable here: both halves of the wire are mine, the API is typed
-and tested, and the adapter is a single choke point per endpoint — so if runtime
-drift ever bites, the fix is to add parsing in the adapters, not to re-architect.
-Keep response types and adapters narrow enough that adding it later is one edit
-per endpoint.
+The first draft of this decision left responses unparsed and typed by assertion.
+That was wrong, for a reason worth being able to say out loud: an unparsed
+response makes the response type a **claim, not a guarantee**. TypeScript erases
+at runtime, so a renamed field ships as `undefined` and surfaces as a blank cell
+or a crash deep inside a component instead of one loud error at the boundary.
+That is precisely what *parse don't validate* exists to prevent, and the boundary
+is the cheapest place in the app to be strict.
+
+Why not Zod for both, then? Three reasons, and an interviewer will want all
+three:
+
+1. **One concern per mechanism.** A form schema's job is to produce *messages for
+   a human* — `min(8, 'Password is too short')`. A parser's job is to decide
+   whether *the server kept its contract*, and to fail loudly when it did not.
+   One library across both invites sharing the schemas too, and the shapes are
+   not the same: a login form has `password`, `/api/user` never does.
+2. **The parser is a pure function in `_domain/`.** Testable with no DOM, no
+   query client and no network — the whole reason that layer exists. A parser
+   test is a list of malformed payloads, which is the cheapest high-value test
+   in the app.
+3. **Nothing new in `package.json`.** § *Project hard rules* 6 makes a dependency
+   something to argue for, and one parser per endpoint is too small a problem to
+   buy a library for. Swapping in valibot or arktype later is one edit per
+   parser, because the client only ever sees `(input: unknown) => T`.
+
+The cost is real: a parser is more code than `z.object({…})`, and it is code I
+have to keep honest. One rule makes that safe — **a parser constructs and returns
+a new object; it never casts.** `return input as TUserType` is a lie that
+type-checks. Building the object field by field means TypeScript enforces that
+every field of the declared type is actually produced, so adding a field to
+`TUserType` fails to compile until the parser reads it.
 
 ### The API contract
 
@@ -461,7 +487,7 @@ Safari autofill hint, and hardcoding it here would be a second source of truth.
 If the API has not shipped that endpoint yet, fall back to a default in the data
 layer rather than reading it in a component.
 
-Error contract — **the client I write has to implement this**, and these four
+Error contract — **the client I write has to implement this**, and these five
 rows are the reason the client exists at all instead of a bare `fetch` per call:
 
 | Status | Should become | Handling |
@@ -470,6 +496,7 @@ rows are the reason the client exists at all instead of a bare `fetch` per call:
 | `401` | an unauthenticated error | the user query resolves to `null`; guards redirect to log in |
 | `419` | — | CSRF cookie refreshed and the request retried **once**, then it surfaces |
 | other | a generic API error carrying `status` | queries do not retry below 500 |
+| `2xx`, body fails its parser | a schema error naming the field | surfaces as the query's `error`; never a silent `undefined` |
 
 The `419` row is the one that bites: Sanctum expires the CSRF token
 independently of the session, so a long-idle tab's first write fails for a reason
@@ -494,13 +521,13 @@ stack and every rule in it should be true here.
 | `security-review` | **Yes** — for anything touching auth, the fetch client, CSRF, cookies or user input. Its JS/TS patterns cover this app's own traps (a bare `fetch` bypassing the shared client, a token in `localStorage`, a client-side-only authorisation gate). |
 | `react-frontend` → `SKILL.md` | **Yes.** The stack table, the commands, the shared-component and no-hardcoded-colour rules, and § *Comments*. |
 | `react-frontend` → `rules/app-structure.md` | **Yes — rewritten for this SPA.** `main.tsx`, `createBrowserRouter`, the three guard tiers (and the `verify-email` redirect-loop trap), `providers.tsx`, `common/`, and the fetch edge. It describes the guards and client I have yet to write, so read it as the spec. |
-| `react-frontend` → `rules/layered-architecture.md` | **Yes, and it is the architecture.** Plain provider functions and adapters (no registry, no `useData` wrapper), `useQuery`/`useMutation` directly, exported query-key consts, RHF + `zodResolver` + a shared form-error mapper. No Zustand layer. Written against code that has since been stripped, so its examples are shapes to build, not files to open. |
+| `react-frontend` → `rules/layered-architecture.md` | **Yes, and it is the architecture.** Plain provider functions, hand-written wire parsers and adapters (no registry, no `useData` wrapper), `useQuery`/`useMutation` directly, exported query-key consts, RHF + `zodResolver` + a shared form-error mapper. No Zustand layer. Written against code that has since been stripped, so its examples are shapes to build, not files to open. |
 | `react-frontend` → `rules/coding-standards.md` | **Yes.** Decomposition, one mutation per hook, Vitest mocking at the boundary you extracted. |
 | `react-frontend` → `rules/icons.md` | **Yes — rewritten.** `lucide-react` via `components/ui/icon.tsx`, which takes an `iconNode`, not a `src`. The underlying rule still binds: **never inline a raw `<svg>`** outside `components/ui/`. |
 | `react-frontend` → `rules/rem-size-guidelines.md` | **Yes — rewritten.** Root is the browser default 16px and `body` is 15px, so `rem` resolves against the root, not body. |
 | `react-frontend` → `rules/infinite-scrolling.md`, `rules/feature-flags.md`, `rules/websocket.md` | **Not yet, by design.** No paginated lists, no flag endpoint, no broadcasting. Each file now says so and describes what to build here. Read the relevant one before introducing the first of its kind. |
 | `vercel-react-best-practices` | **Yes — pruned to 58 rules in 7 categories.** The `server-*` category, `async-api-routes` and the hydration-mismatch rule are gone; `next/dynamic` → `React.lazy`, SWR → TanStack Query, bundler notes → Vite/Rollup. The generated `AGENTS.md` was deleted (unregenerable, and it contradicted the pruned rules), so `rules/` is the only source. |
-| `zod` | **Partly — forms only.** Every form resolves through a schema, so the schema-authoring and error-mapping material applies in full. Its parse-at-the-boundary rules describe a design this repo has deliberately not taken for API responses (§ *Zod is for forms, not for the wire*) — know the argument, and know why it was declined here. |
+| `zod` | **Partly — forms only.** Every form resolves through a schema, so the schema-authoring and error-mapping material applies in full. Its parse-at-the-boundary *reasoning* is this repo's reasoning too, but at the wire the mechanism is a hand-written parser, not Zod (§ *Schemas at the wire, Zod for forms*) — read those rules for the argument, not for the API. |
 | `laravel-backend` | **Not here.** It belongs to `cocktail-bar-api` and is not installed in this repo. |
 
 There is no gate script enforcing any of this — it is discipline, not machinery.
@@ -581,8 +608,8 @@ valve stays sanctioned where it genuinely applies.
 3. **Every request goes through the one shared fetch client** in
    `common/lib/api/`. No bare `fetch` or `axios` in a hook or a component — the
    CSRF retry, the `401`/`422` mapping and the credentials mode live in exactly
-   one place. Zod guards form input, not responses (§ *Zod is for forms, not for
-   the wire*).
+   one place. Every response body is parsed by a hand-written parser; Zod guards
+   form input only (§ *Schemas at the wire, Zod for forms*).
 4. **`_domain/` imports nothing from `components/`, `hooks/` or `data/`.**
 5. **TanStack Query is the server-state cache.** Do not mirror fetched data into
    `useState`, and do not add a second data library.
@@ -600,11 +627,11 @@ to as a finished diff, and the whole point is that each step costs me something.
 1. Read this file and the skills that apply (§ *Skills*). Check the API repo's
    `CLAUDE.md` for the domain rules you are rendering.
 2. Confirm the endpoint exists and what it returns. Add it to `API_ENDPOINTS`.
-3. `_domain/`: the API response type, the domain type if they differ, a zod
-   schema for any form this feature needs, and any pure helpers. Unit-test the
-   pure parts.
-4. `data/`: a provider function per endpoint, going through the shared client; an
-   adapter where the shapes differ. Test the adapter.
+3. `_domain/`: the API response type and its parser, the domain type if they
+   differ, a zod schema for any form this feature needs, and any pure helpers.
+   Unit-test the pure parts, the parser's reject cases included.
+4. `data/`: a provider function per endpoint, going through the shared client and
+   passing its `parse`; an adapter where the shapes differ. Test the adapter.
 5. `hooks/`: one query or one mutation per hook, returning domain-friendly names
    (`barMatches`, `isLoadingBarMatches`), plus cache invalidation.
 6. `components/`: thin views built from `common/components/ui/`. Forms get React
