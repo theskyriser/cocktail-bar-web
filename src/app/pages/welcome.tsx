@@ -1,14 +1,9 @@
-import { Link } from 'react-router';
-import { ROUTES } from '@/app/routes';
 import AppLogoIcon from '@/common/components/app-logo-icon';
-import { Button } from '@/common/components/ui/button';
 import { useDocumentTitle } from '@/common/hooks/use-document-title';
 import { APP_NAME } from '@/common/lib/app-name';
-import { useAuth } from '@/context.auth/hooks/use-auth';
 
 export default function Welcome() {
     useDocumentTitle();
-    const { isAuthenticated } = useAuth();
 
     return (
         <div className="flex min-h-svh flex-col items-center justify-center gap-8 bg-background p-6">
@@ -21,23 +16,6 @@ export default function Welcome() {
                     Tell it what you have on the shelf, and it works out what
                     you can pour.
                 </p>
-            </div>
-
-            <div className="flex items-center gap-3">
-                {isAuthenticated ? (
-                    <Button asChild>
-                        <Link to={ROUTES.dashboard}>Go to dashboard</Link>
-                    </Button>
-                ) : (
-                    <>
-                        <Button asChild>
-                            <Link to={ROUTES.login}>Log in</Link>
-                        </Button>
-                        <Button asChild variant="secondary">
-                            <Link to={ROUTES.register}>Create account</Link>
-                        </Button>
-                    </>
-                )}
             </div>
         </div>
     );
