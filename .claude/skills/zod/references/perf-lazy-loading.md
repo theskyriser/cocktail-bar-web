@@ -46,9 +46,7 @@ async function handleAnalyticsData(data: unknown) {
 **Route-based schema loading:**
 
 ```typescript
-// app/admin/reports/page.tsx
-'use client'
-
+// src/app/pages/reports.tsx
 import { useEffect, useState } from 'react'
 import type { z } from 'zod'
 
@@ -132,4 +130,4 @@ schema.parse(data)
 - Small applications with few schemas
 - Schemas used on every page (defeats purpose)
 
-Reference: [Next.js Dynamic Imports](https://nextjs.org/docs/app/building-your-application/optimizing/lazy-loading)
+Reference: [Vite dynamic import](https://vite.dev/guide/features.html#dynamic-import), [React.lazy](https://react.dev/reference/react/lazy)

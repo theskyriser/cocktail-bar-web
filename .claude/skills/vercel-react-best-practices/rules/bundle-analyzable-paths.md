@@ -1,63 +1,57 @@
 ---
-title: Prefer Statically Analyzable Paths
+title: Prefer Statically Analyzable Import Paths
 impact: HIGH
-impactDescription: avoids accidental broad bundles and file traces
-tags: bundle, nextjs, vite, webpack, rollup, esbuild, path
+impactDescription: avoids accidental broad bundles
+tags: bundle, vite, rollup, dynamic-import, path
 ---
 
-## Prefer Statically Analyzable Paths
+## Prefer Statically Analyzable Import Paths
 
-Build tools work best when import and file-system paths are obvious at build time. If you hide the real path inside a variable or compose it too dynamically, the tool either has to include a broad set of possible files, warn that it cannot analyze the import, or widen file tracing to stay safe.
+Vite and Rollup decide what goes in which chunk by reading `import()` calls at build time. Hide
+the path inside a variable and the bundler either fails outright, or includes every file that
+could possibly match — a chunk containing things no route needs.
 
-Prefer explicit maps or literal paths so the set of reachable files stays narrow and predictable. This is the same rule whether you are choosing modules with `import()` or reading files in server/build code.
-
-When analysis becomes too broad, the cost is real:
-- Larger server bundles
-- Slower builds
-- Worse cold starts
-- More memory use
-
-### Import Paths
-
-**Incorrect (the bundler cannot tell what may be imported):**
+**Incorrect (Rollup cannot tell what may be imported):**
 
 ```ts
 const PAGE_MODULES = {
-  home: './pages/home',
-  settings: './pages/settings',
+  dashboard: './pages/dashboard',
+  profile: './pages/profile',
 } as const
 
-const Page = await import(PAGE_MODULES[pageName])
+const Page = await import(PAGE_MODULES[name])   // ✗ fails: dynamic import variable
 ```
 
-**Correct (use an explicit map of allowed modules):**
+A bare variable in `import()` is an error in Rollup without a plugin, and even with one it
+compiles to "include everything under that directory".
+
+**Correct (an explicit map of thunks):**
 
 ```ts
 const PAGE_MODULES = {
-  home: () => import('./pages/home'),
-  settings: () => import('./pages/settings'),
+  dashboard: () => import('./pages/dashboard'),
+  profile: () => import('./pages/profile'),
 } as const
 
-const Page = await PAGE_MODULES[pageName]()
+const Page = await PAGE_MODULES[name]()
 ```
 
-### File-System Paths
+Each `import()` is now a literal the bundler can see, so each gets its own chunk and the map keys
+stay type-checked. This is the same shape `src/app/router.tsx` uses for its `lazy()` routes.
 
-**Incorrect (a 2-value enum still hides the final path from static analysis):**
+**When you genuinely want a directory**, say so explicitly with Vite's glob import rather than
+letting a variable widen it:
 
 ```ts
-const baseDir = path.join(process.cwd(), 'content/' + contentKind)
+const modules = import.meta.glob('./recipes/*.ts')   // explicit, and typed as a known map
 ```
 
-**Correct (make each final path literal at the callsite):**
+**Rules:**
 
-```ts
-const baseDir =
-  kind === ContentKind.Blog
-    ? path.join(process.cwd(), 'content/blog')
-    : path.join(process.cwd(), 'content/docs')
-```
+- Never pass a variable to `import()`. Map keys to thunks instead.
+- Keep the alias set to one (`@/` → `src/`). Every extra alias is another resolution rule Vite and
+  Vitest must agree on.
+- A partially-static path (`import('./icons/' + name)`) is the same problem as a fully dynamic one.
 
-In Next.js server code, this matters for output file tracing too. `path.join(process.cwd(), someVar)` can widen the traced file set because Next.js statically analyze `import`, `require`, and `fs` usage.
-
-Reference: [Next.js output](https://nextjs.org/docs/app/api-reference/config/next-config-js/output), [Next.js dynamic imports](https://nextjs.org/learn/seo/dynamic-imports), [Vite features](https://vite.dev/guide/features.html), [esbuild API](https://esbuild.github.io/api/), [Rollup dynamic import vars](https://www.npmjs.com/package/@rollup/plugin-dynamic-import-vars), [Webpack dependency management](https://webpack.js.org/guides/dependency-management/)
+Reference: [Vite features](https://vite.dev/guide/features.html),
+[Rollup dynamic import vars](https://www.npmjs.com/package/@rollup/plugin-dynamic-import-vars)

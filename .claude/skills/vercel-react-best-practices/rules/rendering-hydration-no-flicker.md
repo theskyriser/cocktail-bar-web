@@ -1,82 +1,72 @@
 ---
-title: Prevent Hydration Mismatch Without Flickering
+title: Apply Client-Only Visual State Before First Paint
 impact: MEDIUM
-impactDescription: avoids visual flicker and hydration errors
-tags: rendering, ssr, hydration, localStorage, flicker
+impactDescription: avoids a visible flash of the wrong theme
+tags: rendering, localStorage, flicker, theme, first-paint
 ---
 
-## Prevent Hydration Mismatch Without Flickering
+## Apply Client-Only Visual State Before First Paint
 
-When rendering content that depends on client-side storage (localStorage, cookies), avoid both SSR breakage and post-hydration flickering by injecting a synchronous script that updates the DOM before React hydrates.
+**There is no SSR and no hydration in this app**, so hydration *mismatch* cannot happen. The other
+half of the problem does: anything read from `localStorage` is unavailable until the JS bundle
+runs, so a theme, a saved layout or a collapsed-sidebar preference applied in React paints the
+default first and the real value a moment later — a visible flash.
 
-**Incorrect (breaks SSR):**
-
-```tsx
-function ThemeWrapper({ children }: { children: ReactNode }) {
-  // localStorage is not available on server - throws error
-  const theme = localStorage.getItem('theme') || 'light'
-  
-  return (
-    <div className={theme}>
-      {children}
-    </div>
-  )
-}
-```
-
-Server-side rendering will fail because `localStorage` is undefined.
-
-**Incorrect (visual flickering):**
+**Incorrect (flashes the default):**
 
 ```tsx
 function ThemeWrapper({ children }: { children: ReactNode }) {
-  const [theme, setTheme] = useState('light')
-  
-  useEffect(() => {
-    // Runs after hydration - causes visible flash
-    const stored = localStorage.getItem('theme')
-    if (stored) {
-      setTheme(stored)
-    }
-  }, [])
-  
-  return (
-    <div className={theme}>
-      {children}
-    </div>
-  )
+    const [theme, setTheme] = useState('light')
+
+    useEffect(() => {
+        setTheme(localStorage.getItem('appearance') ?? 'light')   // after paint
+    }, [])
+
+    return <div className={theme}>{children}</div>
 }
 ```
 
-Component first renders with default value (`light`), then updates after hydration, causing a visible flash of incorrect content.
+The first paint is `light`, then it jumps. Moving the read into `useState`'s initialiser paints
+correctly but still waits for the whole bundle to parse and execute first.
 
-**Correct (no flicker, no hydration mismatch):**
+**Correct (what this project does):** a tiny synchronous script in `index.html`, before the
+bundle, that puts the class on `<html>`:
 
-```tsx
-function ThemeWrapper({ children }: { children: ReactNode }) {
-  return (
-    <>
-      <div id="theme-wrapper">
-        {children}
-      </div>
-      <script
-        dangerouslySetInnerHTML={{
-          __html: `
-            (function() {
-              try {
-                var theme = localStorage.getItem('theme') || 'light';
-                var el = document.getElementById('theme-wrapper');
-                if (el) el.className = theme;
-              } catch (e) {}
-            })();
-          `,
-        }}
-      />
-    </>
-  )
-}
+```html
+<script>
+    (function () {
+        try {
+            const appearance = localStorage.getItem('appearance') ?? 'system'
+            const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches
+
+            if (appearance === 'dark' || (appearance === 'system' && prefersDark)) {
+                document.documentElement.classList.add('dark')
+            }
+        } catch {}
+    })()
+</script>
+
+<style>
+    html { background-color: #f3f2f2; }
+    html.dark { background-color: #2d2b2b; }
+</style>
 ```
 
-The inline script executes synchronously before showing the element, ensuring the DOM already has the correct value. No flickering, no hydration mismatch.
+Both halves matter. The script decides the theme before anything renders; the inline `<style>`
+gives the page its background **before `app.css` has loaded**, so there is no white flash on a
+slow connection either. These are the only hardcoded colours sanctioned in the project, because
+at that moment no token exists yet.
 
-This pattern is especially useful for theme toggles, user preferences, authentication states, and any client-only data that should render immediately without flashing default values.
+`initializeTheme()` in `main.tsx` then normalises the stored value and attaches the
+`prefers-color-scheme` listener; `useAppearance` exposes it to React through
+`useSyncExternalStore`. The inline script is not a duplicate of that work — it is the part that
+has to happen before React exists.
+
+**Rules:**
+
+- Visual state that comes from browser storage is applied in `index.html`, not in an effect.
+- Keep that script tiny, dependency-free and wrapped in `try/catch` — storage can throw in private
+  mode or with site data blocked.
+- Read the same storage key in both places. A rename in `use-appearance.tsx` that misses
+  `index.html` reintroduces the flash silently, and nothing fails to compile.
+- Do not extend this pattern to non-visual state. Anything that can wait for React should.

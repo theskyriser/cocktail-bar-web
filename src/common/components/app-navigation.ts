@@ -4,8 +4,8 @@ import type { NavItem } from '@/common/types';
 
 export const mainNavItems: NavItem[] = [
     {
-        title: 'Dashboard',
-        href: ROUTES.dashboard,
+        title: 'Home',
+        href: ROUTES.home,
         icon: LayoutGrid,
     },
 ];

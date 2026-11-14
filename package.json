@@ -11,7 +11,7 @@
         "check:fix": "vp check --fix",
         "types:check": "tsc --noEmit",
         "test": "vp test",
-        "ci:check": "vp check && tsc --noEmit && vp test --run"
+        "ci:check": "vp check && tsc --noEmit && vp test --run --passWithNoTests"
     },
     "dependencies": {
         "@hookform/resolvers": "^7.0.6",

@@ -1,5 +1,9 @@
 # CLAUDE.md — cocktail-bar-web
 
+> **Learning mode is on in this repo.** Explain how and why; do not write the
+> implementation. See § *Learning mode* — it governs every other section in this
+> file, including the checklists.
+
 ## What this project is
 
 The React front end of the cocktail calculator: **you tell it what ingredients
@@ -24,19 +28,174 @@ The product splits in two, and the halves live on opposite sides of the wire:
 If a screen needs a different answer, the API should be sending a different
 answer.
 
-### State of play (2026-11-13)
+### State of play (2026-11-14)
 
-Fresh repo, split out of the former Inertia monolith on 2026-11-13. What exists:
-the full app shell (sidebar and header layouts, Classical theme, shadcn/Radix
-primitives), auth screens (log in, register, forgot/reset password, verify
-email), the settings area (profile, security, appearance), a typed Sanctum-aware
-fetch client, TanStack Query wiring, and a React Router route tree with
-auth/guest/verified guards.
+The repo was split out of the former Inertia monolith on 2026-11-13, then
+**deliberately stripped back to a shell on 2026-11-14** so that the architecture
+is mine to build rather than mine to read. See § *Stripped back, and what that
+means for you*.
 
-There is **no cocktail domain code yet** — no `context.ingredient/`,
-`context.recipe/` or `context.bar/`. The dashboard is still the starter kit's
-placeholder panels. Everything in § *Where the cocktail domain goes* describes
-where new code should land, not code you can go and read.
+What exists: the app shell and its components (sidebar and header layouts, nav,
+breadcrumbs, headings, the Classical theme, the shadcn/Radix primitives in
+`common/components/ui/`), the shared hooks, `main.tsx` > `Providers` >
+`RouterProvider`, and a two-route router — welcome and 404.
+
+What does **not** exist, and is mine to write:
+
+- **Both bounded contexts.** `context.auth/` and `context.settings/` are gone,
+  along with every `_domain/`, `data/`, `hooks/` and `components/` file in them.
+- **The whole API layer.** `common/lib/api/` is gone — no `fetchApi`, no
+  `ApiError`/`ValidationError`/`UnauthenticatedError`, no `API_ENDPOINTS`, no
+  `applyApiErrors`, no `createQueryClient`. `providers.tsx` now builds a bare
+  `new QueryClient()`.
+- **The route guards.** `RequireAuth` and `GuestOnly` are gone. `ROUTES` holds
+  only `home`.
+- **Every page but welcome and 404**, and `common/layouts/settings/layout.tsx`
+  with them.
+- **Every test.** `ci:check` passes `--passWithNoTests` until the first one
+  lands.
+
+There is also **no cocktail domain code** — no `context.ingredient/`,
+`context.recipe/` or `context.bar/`. Everything in § *Where the cocktail domain
+goes* describes where new code should land, not code you can go and read.
+
+### Stripped back, and what that means for you
+
+The deleted code was working, reviewed code. It was removed because reading a
+finished auth stack is not the same exercise as building one, and § *Learning
+mode* is the point of this repo. **Do not restore it**, in whole or in part, from
+git history, from memory of the Inertia original, or from another starter kit —
+not even as "a reference to copy from". If I ask what the old `user.adapter.ts`
+did, describe the pattern; do not reproduce the file.
+
+Two consequences for how you answer:
+
+- **There are no worked examples left in this repo.** The §§ below still
+  describe the shapes — layers, adapters, provider functions — but you cannot
+  point me at a file and say "copy that". Explain the shape instead, and name the
+  rule file in `.claude/skills/` that defines it.
+- **Sections written in the imperative describe my work, not yours.** "Add it to
+  `API_ENDPOINTS`" now means "create `API_ENDPOINTS` and add it" — and I create
+  it.
+
+---
+
+## Learning mode
+
+**This repo is a learning exercise.** It exists so that I can prepare for a
+technical interview by building it myself. Working code is not the deliverable —
+**my ability to write it and defend it out loud is.** Code written for me is code
+I cannot defend under questioning, so the default here is inverted from a normal
+project:
+
+> **Explain how and why. Do not write the implementation.**
+
+This is not a limit on how much you help. It is a change in *what* help means:
+the useful contribution is the reasoning, the rule that decides it, the name of
+the pattern and the trap I was about to walk into — not the diff.
+
+### What an answer looks like
+
+Ground every answer in the rules and skills **this repo already defines**, not in
+generic advice. The §§ below and `.claude/skills/` are the syllabus; cite them.
+For whatever I have asked about, cover:
+
+1. **Where it goes** — which context, which layer (`_domain/` · `data/` ·
+   `hooks/` · `components/`), and the shape the file should take. There are no
+   worked examples left to copy (§ *Stripped back*), so describe the shape and
+   cite the rule rather than pointing at a file.
+2. **Which rule decides it** — name the section of this file, or the skill rule
+   file by path (`.claude/skills/react-frontend/rules/layered-architecture.md`,
+   `.claude/skills/zod/references/parse-never-trust-json.md`), so I can read the
+   source rather than take your word for it.
+3. **Why — the failure mode, concretely.** "`_domain/` may not import `data/`" is
+   a rule. "Import it and the schema tests now need a query client and a network
+   stub, which is the entire reason the layer exists" is an explanation. Always
+   give the second kind.
+4. **The name of the idea.** Say *dependency rule*, *anti-corruption layer*
+   (which is what the adapters are), *parse don't validate*, *server-authoritative
+   state*, *bounded context*, *optimistic update*, *cache invalidation key*. The
+   vocabulary is half of what the interview is testing; a correct answer in the
+   wrong words still fails.
+5. **The trade-off, and what it rules out.** What the alternative was and why
+   this repo rejected it — why TanStack Query instead of Redux, why no provider
+   registry (§ *Skills*), why `context.ingredient/` and `context.bar/` are not
+   one module.
+6. **The follow-up an interviewer would ask**, and a sketch of how I should
+   answer it.
+
+Then **stop**, and let me write it.
+
+### How much code is allowed
+
+**Signatures and skeletons only. Never a working body.**
+
+Allowed — shapes, so that I am solving the problem and not guessing an API:
+
+```ts
+// src/context.bar/data/getBarMatches.ts
+export async function getBarMatches(opts: {
+    data: { barId: number };
+    signal?: AbortSignal;
+}): Promise<TBarMatches>
+// body: the shared client, then the adapter — I write this
+```
+
+Also allowed: a type or zod schema's field list, a file tree of what I am about
+to create, a function name with its parameters, an `it('…')` title list for the
+tests I should write.
+
+**Not** allowed: the filled-in body, the whole file, anything runnable, or the
+same implementation smuggled across several messages a line at a time. If an
+explanation would be clearer with ten lines of code, it is clearer with three
+sentences and a signature — write those instead.
+
+### Asking for code anyway
+
+I will say so explicitly — "write it", "code this one", "just show me the file".
+That opt-in covers **that one request and nothing else**, and lapses the moment
+it is done; the next question goes back to explanation without being told. Do not
+infer permission from frustration, from a long back-and-forth, or from my having
+asked you to write something an hour ago.
+
+When I do opt in, every normal rule in this file applies in full — the layering,
+no bare `fetch` outside the client, no hardcoded colours, § *Comments*,
+`npm run ci:check`.
+Learning mode does not lower the bar; it moves who clears it.
+
+### Still expected of you
+
+Learning mode removes implementation, not involvement:
+
+- **Review what I wrote.** This is the highest-value thing you can do here. Read
+  my code against § *Project hard rules* and the skills, and say what is wrong
+  and why — layering violations, a hardcoded colour, a bare `fetch`, a match tier
+  recomputed in TypeScript, state mirrored out of the query cache into
+  `useState`. Point at the defect; let me fix it. If I am stuck twice on the same
+  thing, narrow the hint, don't hand over the answer.
+- **Run things and read real output.** `npm run ci:check`, `npm run types:check`,
+  a scoped `npx vp test --run …`, `git diff`, reading any file. Teaching from an
+  actual error message beats teaching from a guessed one — and reading a stack
+  trace is itself the skill being practised, so walk me through how you located
+  the cause.
+- **Ask before you answer.** "What's your instinct for which layer this belongs
+  in?" Retrieval practice is worth more than a clean explanation I merely nodded
+  at. Then correct the answer I give.
+- **Quiz me.** Interview-shaped follow-ups on what we just built: why is
+  `_domain/` forbidden from importing `data/`? What breaks if the adapter moves
+  into the component? Why is `parts` not storable in the same column as a
+  measure? What happens on a `419`?
+- **Write prose.** Markdown is not code: design notes, plans, comparisons,
+  ADR-style write-ups and this file are yours to write to disk freely.
+
+### Where this does not apply
+
+Config and ceremony are not the exercise and should not be made artificially
+hard — `.env` values, a `package.json` script, a CI workflow, a `tsconfig`
+option, a shadcn CLI invocation. Explaining still beats doing, but if I ask you
+to fix a lint config, fix it. The exercise is **the front-end architecture and
+the domain**: contexts, layers, schemas, adapters, hooks, components, routes,
+tests.
 
 ---
 
@@ -57,6 +216,12 @@ On a conflict: the API repo's `CLAUDE.md` wins on domain and matching rules, thi
 file wins on front-end architecture and process. If a skill contradicts either,
 this file wins — **say so rather than quietly following the skill.**
 
+§ *Learning mode* outranks every other section here on **how work is done**. The
+rest of this file is written in the imperative — "add it to `API_ENDPOINTS`",
+"unit-test the pure parts" — because it was written for someone implementing.
+Read those as **what I should do and you should explain**, never as your licence
+to do them.
+
 ---
 
 ## Stack
@@ -67,7 +232,7 @@ this file wins — **say so rather than quietly following the skill.**
 | Routing | React Router (`react-router` v8) — `createBrowserRouter`, route objects in `src/app/router.tsx`, paths in `src/app/routes.ts` |
 | Server state | TanStack Query v5. **The only cache.** No Redux, no Zustand yet |
 | Forms | React Hook Form + `@hookform/resolvers/zod` |
-| Validation | Zod v4 — schemas are the source of truth for both forms and API responses |
+| Validation | Zod v4 — **form input only.** API responses are typed, not parsed; see § *Zod is for forms, not for the wire* |
 | UI | Tailwind 4, Radix primitives via shadcn (`components.json`, new-york, neutral), `lucide-react` icons, `sonner` toasts, `class-variance-authority` + `tailwind-merge` |
 | Theme | The **Classical** design system — Cormorant Garamond / Lora, `#b68235` accent, 2–7px radii. Fonts load from Bunny Fonts in `index.html` |
 | Build / lint / test | `vite-plus` (`vp`) — one tool for dev server, build, lint, format and Vitest |
@@ -94,7 +259,7 @@ Scope test runs while iterating, and use the whole gate before calling something
 done:
 
 ```bash
-npx vp test --run src/context.auth
+npx vp test --run src/context.bar
 ```
 
 The app needs the API running to do anything past the welcome screen:
@@ -106,7 +271,7 @@ cd ../cocktail-bar-api && ./vendor/bin/sail up -d && composer run dev
 ### Local cookie auth, and why it works on localhost
 
 Sanctum cookie auth needs the API and the SPA to look like the same site.
-Cookies ignore the port, so `localhost:5173` and `localhost:8000` share them —
+Cookies ignore the port, so `localhost:5173` and `localhost:80` share them —
 no Vite proxy needed. The API's `.env` must say:
 
 ```
@@ -118,7 +283,7 @@ FRONTEND_URL=http://localhost:5173
 and this app's `.env` must point at the API:
 
 ```
-VITE_API_URL=http://localhost:8000
+VITE_API_URL=http://localhost:80
 ```
 
 In production they must be **sibling subdomains** of one registrable domain
@@ -137,25 +302,33 @@ src/
 │   ├── router.tsx            # route objects; every page lazy except welcome
 │   ├── routes.ts             # ROUTES: the ONLY place a path string is written
 │   ├── providers.tsx         # QueryClientProvider, TooltipProvider, Toaster
-│   ├── guards/               # RequireAuth, GuestOnly
 │   └── pages/                # one file per route; composes a layout + context components
-├── common/                   # shared across every context
-│   ├── components/           # app shell, nav, breadcrumbs, headings
-│   │   └── ui/               # shadcn primitives — treat as vendored, see below
-│   ├── hooks/                # use-appearance, use-mobile, use-current-url, …
-│   ├── layouts/              # app-layout, auth-layout, settings/layout
-│   ├── lib/
-│   │   ├── utils.ts          # cn()
-│   │   └── api/              # fetchApi, errors, endpoints, query-client, form-errors
-│   ├── styles/app.css        # Tailwind theme + Classical tokens
-│   └── types/                # navigation, ui, global.d.ts
-├── context.auth/             # bounded context: who the user is
-│   ├── _domain/              # zod schemas, types — no React, no fetch
-│   ├── data/                 # provider functions + adapters — no React
-│   ├── hooks/                # one mutation per hook
-│   └── components/           # forms and menus
-└── context.settings/         # bounded context: profile, password, account deletion
-    ├── _domain/  data/  hooks/  components/
+│       ├── welcome.tsx
+│       └── not-found.tsx
+└── common/                   # shared across every context
+    ├── components/           # app shell, nav, breadcrumbs, headings
+    │   └── ui/               # shadcn primitives — treat as vendored, see below
+    ├── hooks/                # use-appearance, use-mobile, use-current-url, …
+    ├── layouts/              # app-layout, auth-layout, app/, auth/
+    ├── lib/
+    │   ├── utils.ts          # cn()
+    │   └── app-name.ts
+    ├── styles/app.css        # Tailwind theme + Classical tokens
+    └── types/                # navigation, ui, global.d.ts
+```
+
+And the directories to create, each a bounded context mirroring the same four
+layers:
+
+```
+src/
+├── app/guards/               # RequireAuth, GuestOnly — mine to write
+├── common/lib/api/           # the fetch client, errors, endpoints — mine to write
+└── context.<name>/
+    ├── _domain/              # zod schemas, types — no React, no fetch
+    ├── data/                 # provider functions + adapters — no React
+    ├── hooks/                # one query or one mutation per hook
+    └── components/           # forms and views
 ```
 
 ### Layered architecture — this is the load-bearing rule
@@ -171,9 +344,9 @@ components/ ──> hooks/ ──> _domain/
 | Layer | Allowed | Forbidden |
 |---|---|---|
 | `_domain/` | zod schemas, derived types, pure functions, label/icon maps | React, `fetch`, JSX, classNames |
-| `data/` | `fetchApi` calls with a zod `schema`, adapters | business rules, React, UI |
+| `data/` | calls through the shared fetch client, adapters | business rules, React, UI |
 | `hooks/` | `useQuery`/`useMutation`, React state, cache invalidation | raw `fetch`, business rules, JSX |
-| `components/` | JSX, hooks, theme classes | `fetchApi`, inline business logic, hardcoded colours |
+| `components/` | JSX, hooks, theme classes | fetching, inline business logic, hardcoded colours |
 
 `_domain/` imports from nothing above it. Ever. That is what makes the schemas
 and pure functions testable with no DOM, no query client and no network, which
@@ -227,32 +400,48 @@ Three traps, all of which show up first as a tempting bit of client code:
 
 ### Shape of a new feature's data layer
 
-A provider function per endpoint, each with a zod schema and, where the API
-shape differs from the domain shape, an adapter:
+A provider function per endpoint and, where the API shape differs from the
+domain shape, an adapter:
 
 ```ts
 // src/context.bar/data/getBarMatches.ts
 export async function getBarMatches(opts: {
     data: { barId: number };
     signal?: AbortSignal;
-}): Promise<TBarMatches> {
-    const response = await fetchApi(`/api/bars/${opts.data.barId}/matches`, {
-        schema: barMatchesSchema,
-        signal: opts.signal,
-    });
-
-    return barMatchesAdapter(response);
-}
+}): Promise<TBarMatches>
+// body: the shared client, then the adapter
 ```
 
 The adapter is the **only** place API shapes (snake_case keys, ISO date strings)
 become domain shapes (camelCase, `Date`). Components and hooks never see a raw
-API shape. `src/context.auth/data/user.adapter.ts` is the worked example.
+API shape, and the adapter is the layer worth unit-testing: it is pure, so it
+needs no query client and no network stub.
+
+### Zod is for forms, not for the wire
+
+Decided on 2026-11-14, reversing the stripped repo's original design. Zod stays a
+dependency and stays the source of truth for **form input** — React Hook Form
+through `@hookform/resolvers/zod`, one schema per form in the context's
+`_domain/`. It is **not** used to parse API responses.
+
+The cost is explicit and worth naming out loud, because an interviewer will push
+on it: an unparsed response means the response type is a **claim, not a
+guarantee**. `Promise<TBarMatches>` says what the API promised, and TypeScript
+erases at runtime, so a renamed field ships as `undefined` and surfaces as a
+blank cell or a crash deep in a component rather than as one loud error at the
+boundary. That is the trade *parse don't validate* exists to avoid.
+
+What makes it tolerable here: both halves of the wire are mine, the API is typed
+and tested, and the adapter is a single choke point per endpoint — so if runtime
+drift ever bites, the fix is to add parsing in the adapters, not to re-architect.
+Keep response types and adapters narrow enough that adding it later is one edit
+per endpoint.
 
 ### The API contract
 
-The front end assumes these endpoints. They are listed in one place —
-`src/common/lib/api/endpoints.ts` — so that a change is one edit, not a search.
+The front end assumes these endpoints. They belong in one place —
+`src/common/lib/api/endpoints.ts`, which does not exist yet and is mine to
+create — so that a change is one edit, not a search.
 
 | Method | Path | Purpose |
 |---|---|---|
@@ -269,43 +458,60 @@ The front end assumes these endpoints. They are listed in one place —
 `/api/auth/config` replaces four props Inertia used to share on every page load.
 `password_rules` is `Password::defaults()->toPasswordRulesString()` — it is a
 Safari autofill hint, and hardcoding it here would be a second source of truth.
-Until the API ships that endpoint the client falls back to
-`fallbackAuthConfig`, so the screens still render.
+If the API has not shipped that endpoint yet, fall back to a default in the data
+layer rather than reading it in a component.
 
-Error contract, enforced in `src/common/lib/api/client.ts`:
+Error contract — **the client I write has to implement this**, and these four
+rows are the reason the client exists at all instead of a bare `fetch` per call:
 
-| Status | Becomes | Handling |
+| Status | Should become | Handling |
 |---|---|---|
-| `422` | `ValidationError` with `errors` | `applyApiErrors()` maps it onto form fields |
-| `401` | `UnauthenticatedError` | `getUser` returns `null`; guards redirect to log in |
+| `422` | a validation error carrying `errors` | mapped onto form fields by one shared helper |
+| `401` | an unauthenticated error | the user query resolves to `null`; guards redirect to log in |
 | `419` | — | CSRF cookie refreshed and the request retried **once**, then it surfaces |
-| other | `ApiError` with `status` | queries do not retry below 500 |
+| other | a generic API error carrying `status` | queries do not retry below 500 |
+
+The `419` row is the one that bites: Sanctum expires the CSRF token
+independently of the session, so a long-idle tab's first write fails for a reason
+that has nothing to do with the user's input. Handle it once in the client, or
+handle it badly in every mutation.
 
 ---
 
 ## Skills
 
-Copied from the API repo into `.claude/skills/`. They are a mixed fit, and
-pretending otherwise would be worse than useless — parts of the React set were
-written for a Next.js App Router app with its own provider registry.
+The skills in `.claude/skills/` were **rewritten for this app on 2026-11-14**.
+They originally arrived as a copy of the API repo's set and were a mixed fit —
+much of the React material assumed a Next.js App Router app with a provider
+registry. That has been pruned and retargeted, so the set now describes *this*
+stack and every rule in it should be true here.
 
 | Skill | Applies here? |
 |---|---|
 | `no-workarounds` | **Yes, always.** Load it for any debugging or test-failure work. |
 | `testing-anti-patterns` | **Yes**, whenever tests are in scope. |
 | `clean-code` | **Yes.** |
-| `security-review` | **Yes** — for anything touching auth, the fetch client, CSRF, cookies or user input. |
-| `react-frontend` → `SKILL.md`, `rules/coding-standards.md` | **Yes.** Shared components before new ones, no hardcoded colours, thin components, one mutation per hook, tests mirroring the component tree. |
-| `react-frontend` → `rules/layered-architecture.md` | **Yes, and it is now the architecture** — this is the decoupled SPA those rules were written for. Two deliberate deviations: there is no central `fetchApi` **provider registry** (providers are imported directly; a registry buys indirection this app does not need), and modules are named `context.{domain}/` as the rule file's first option. |
-| `react-frontend` → `rules/app-structure.md` | **Reasoning yes, specifics no.** It assumes Next.js App Router files (`layout.tsx`, `middleware.ts`, server prefetch). The equivalents here are `src/app/router.tsx`, `src/app/guards/` and `src/common/layouts/`. |
-| `react-frontend` → `rules/icons.md` | **No.** It assumes an SVG asset folder with a generated filename union. This app uses `lucide-react` through `components/ui/icon.tsx`; the import *is* the type check. The underlying rule still binds: **never inline a raw `<svg>`** outside `components/ui/`. |
-| `react-frontend` → `rules/infinite-scrolling.md`, `rules/websocket.md`, `rules/feature-flags.md` | **Not yet.** No infinite lists, no Echo/Pusher, no flag provider. Read them before introducing one. |
-| `vercel-react-best-practices` | **Partly.** `rerender-*`, `js-*`, `bundle-*` and `client-*` rules are plain React and apply. `server-*` and `async-*` are React Server Components and Next data fetching — **not this stack.** |
-| `zod` | **Yes, fully.** Zod is load-bearing here: every API response is parsed and every form resolves through a schema. |
-| `laravel-backend` | **No.** Wrong repo — it belongs to `cocktail-bar-api`. |
+| `security-review` | **Yes** — for anything touching auth, the fetch client, CSRF, cookies or user input. Its JS/TS patterns cover this app's own traps (a bare `fetch` bypassing the shared client, a token in `localStorage`, a client-side-only authorisation gate). |
+| `react-frontend` → `SKILL.md` | **Yes.** The stack table, the commands, the shared-component and no-hardcoded-colour rules, and § *Comments*. |
+| `react-frontend` → `rules/app-structure.md` | **Yes — rewritten for this SPA.** `main.tsx`, `createBrowserRouter`, the three guard tiers (and the `verify-email` redirect-loop trap), `providers.tsx`, `common/`, and the fetch edge. It describes the guards and client I have yet to write, so read it as the spec. |
+| `react-frontend` → `rules/layered-architecture.md` | **Yes, and it is the architecture.** Plain provider functions and adapters (no registry, no `useData` wrapper), `useQuery`/`useMutation` directly, exported query-key consts, RHF + `zodResolver` + a shared form-error mapper. No Zustand layer. Written against code that has since been stripped, so its examples are shapes to build, not files to open. |
+| `react-frontend` → `rules/coding-standards.md` | **Yes.** Decomposition, one mutation per hook, Vitest mocking at the boundary you extracted. |
+| `react-frontend` → `rules/icons.md` | **Yes — rewritten.** `lucide-react` via `components/ui/icon.tsx`, which takes an `iconNode`, not a `src`. The underlying rule still binds: **never inline a raw `<svg>`** outside `components/ui/`. |
+| `react-frontend` → `rules/rem-size-guidelines.md` | **Yes — rewritten.** Root is the browser default 16px and `body` is 15px, so `rem` resolves against the root, not body. |
+| `react-frontend` → `rules/infinite-scrolling.md`, `rules/feature-flags.md`, `rules/websocket.md` | **Not yet, by design.** No paginated lists, no flag endpoint, no broadcasting. Each file now says so and describes what to build here. Read the relevant one before introducing the first of its kind. |
+| `vercel-react-best-practices` | **Yes — pruned to 58 rules in 7 categories.** The `server-*` category, `async-api-routes` and the hydration-mismatch rule are gone; `next/dynamic` → `React.lazy`, SWR → TanStack Query, bundler notes → Vite/Rollup. The generated `AGENTS.md` was deleted (unregenerable, and it contradicted the pruned rules), so `rules/` is the only source. |
+| `zod` | **Partly — forms only.** Every form resolves through a schema, so the schema-authoring and error-mapping material applies in full. Its parse-at-the-boundary rules describe a design this repo has deliberately not taken for API responses (§ *Zod is for forms, not for the wire*) — know the argument, and know why it was declined here. |
+| `laravel-backend` | **Not here.** It belongs to `cocktail-bar-api` and is not installed in this repo. |
 
 There is no gate script enforcing any of this — it is discipline, not machinery.
 Say in the commit or PR which skills gated the work.
+
+In learning mode these skills are also the **reading list**. When one of them
+decides an answer, cite the rule file by path so I can go and read it — and when
+a skill's reasoning applies here but its specifics do not (the Next.js
+assumptions in `rules/app-structure.md`, the `server-*` rules written for RSC),
+say which half you are using. Telling the two apart is itself an interview skill:
+it is the difference between knowing a convention and knowing why it exists.
 
 ---
 
@@ -346,7 +552,8 @@ valve stays sanctioned where it genuinely applies.
   divergence in behaviour and accessibility, not just in styling.
 - **One path string, one place.** New routes go in `ROUTES`
   (`src/app/routes.ts`); new endpoints go in `API_ENDPOINTS`
-  (`src/common/lib/api/endpoints.ts`). No string literals at call sites.
+  (`src/common/lib/api/endpoints.ts`, once it exists). No string literals at
+  call sites.
 - **One mutation per hook.** No `useBarActions` god hook bundling create, update
   and delete. Each action gets its own hook with its own success handling.
 - **Thin components.** Max ~200 lines a file, ~50 lines a function. If a view
@@ -358,9 +565,11 @@ valve stays sanctioned where it genuinely applies.
   outright rather than leaving compatibility shims.
 - **Surface assumptions.** State the call you made; do not bury it in a
   condition.
-- **Verified means verified.** A feature is done when its tests pass and you
-  have seen them pass. Run `npm run ci:check` before reporting work complete; if
-  you did not run it, say so. "Should work" is not done.
+- **Verified means verified.** A feature is done when its tests pass and someone
+  has watched them pass. In learning mode that someone is normally me, running
+  `npm run ci:check`; you may run it to diagnose. Either way, say what was run
+  and what it said. "Should work" is not done — and "I explained it correctly"
+  is not done either.
 
 ### Project hard rules
 
@@ -369,9 +578,11 @@ valve stays sanctioned where it genuinely applies.
    computes; this app renders.
 2. **Ingredient identity never lives in TypeScript.** No hardcoded ingredient,
    alias or substitution lists — it is a second source of truth that will drift.
-3. **Every API response is parsed by a zod schema** in the data layer, and every
-   `fetch` goes through `fetchApi`. No bare `fetch` or `axios` in a hook or a
-   component.
+3. **Every request goes through the one shared fetch client** in
+   `common/lib/api/`. No bare `fetch` or `axios` in a hook or a component — the
+   CSRF retry, the `401`/`422` mapping and the credentials mode live in exactly
+   one place. Zod guards form input, not responses (§ *Zod is for forms, not for
+   the wire*).
 4. **`_domain/` imports nothing from `components/`, `hooks/` or `data/`.**
 5. **TanStack Query is the server-state cache.** Do not mirror fetched data into
    `useState`, and do not add a second data library.
@@ -379,20 +590,25 @@ valve stays sanctioned where it genuinely applies.
 
 ---
 
-## Adding a feature: checklist
+## Adding a feature: checklist — and the order to learn it in
+
+In learning mode this doubles as the curriculum. Walk me through it **one step at
+a time**: explain the step, wait while I write it, review what I wrote, then move
+on. Do not explain all eight at once — a wall of guidance is as easy to nod along
+to as a finished diff, and the whole point is that each step costs me something.
 
 1. Read this file and the skills that apply (§ *Skills*). Check the API repo's
    `CLAUDE.md` for the domain rules you are rendering.
 2. Confirm the endpoint exists and what it returns. Add it to `API_ENDPOINTS`.
-3. `_domain/`: zod schema for the API shape, a resource schema for the domain
-   shape if they differ, types via `z.infer`, and any pure helpers. Unit-test the
+3. `_domain/`: the API response type, the domain type if they differ, a zod
+   schema for any form this feature needs, and any pure helpers. Unit-test the
    pure parts.
-4. `data/`: a provider function per endpoint, each passing its schema; an
+4. `data/`: a provider function per endpoint, going through the shared client; an
    adapter where the shapes differ. Test the adapter.
 5. `hooks/`: one query or one mutation per hook, returning domain-friendly names
    (`barMatches`, `isLoadingBarMatches`), plus cache invalidation.
 6. `components/`: thin views built from `common/components/ui/`. Forms get React
-   Hook Form + `zodResolver` + `applyApiErrors`.
+   Hook Form + `zodResolver`, and server-side `422`s mapped back onto fields.
 7. Route in `ROUTES` and `src/app/router.tsx`, lazy-loaded, behind the right
    guard. Page in `src/app/pages/` composing a layout and the context's
    components.

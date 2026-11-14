@@ -1,752 +1,497 @@
 ---
 paths:
-  - "**/*.{ts,tsx,js,jsx}"
+  - "**/*.{ts,tsx}"
 ---
 
-# Layered Architecture Rules
+# Layered Architecture
 
-## Architecture Overview
+## Overview
 
-The frontend follows a **four-layer architecture** organized by domain context modules:
-
-```
-View Layer          (React components — render UI, handle interactions)
-    |
-    v depends on
-Hook Layer          (React hooks — bridge state, compose domain + data)
-    |
-    v depends on
-Domain Layer        (Zod schemas, types, enums, pure functions — no React)
-    |
-    v depends on
-Data Layer          (Provider functions, adapters — API communication)
-    |
-    v depends on
-External Systems    (REST APIs, WebSockets)
-```
-
-Each domain lives in its own **context module** — one directory per bounded context, which
-mirrors the layering internally. Follow whatever naming the project already uses for these
-modules (`src/context.{domain}/`, `src/features/{domain}/` and `src/modules/{domain}/` are all
-common); the structure inside matters more than the prefix:
+Each bounded context is a directory under `src/` that mirrors the same four layers, and the
+dependency arrow only ever points down:
 
 ```
-context.{domain}/
-  _domain/          <- Domain Layer (schemas, types, enums, pure utils)
-  components/       <- View Layer (React components)
-  hooks/            <- Hook Layer (domain-specific hooks)
-  data/             <- Data Layer (API provider functions, adapters)
-  store/            <- State Layer (Zustand stores, only when React Query is insufficient)
-  constants/        <- Domain constants
-  util/             <- Domain pure utility functions
+components/  (View)      React components — render UI, handle interaction
+     │
+     ├──> hooks/  (Hook) useQuery / useMutation, React state, cache invalidation
+     │         │
+     │         └──> data/  (Data)   fetchApi + Zod schema + adapters — no React
+     │                  │
+     └──> _domain/ <────┘ (Domain)  Zod schemas, types, pure functions — no React, no fetch
 ```
+
+```
+src/context.<domain>/
+  _domain/        <- schemas, derived types, enums, pure functions
+  data/           <- provider functions, adapters
+  hooks/          <- one query or one mutation per hook
+  components/     <- thin views
+```
+
+`context.auth/` and `context.settings/` are the worked examples. The cocktail contexts
+(`context.ingredient/`, `context.recipe/`, `context.bar/`) do not exist yet and should be carved
+the same way the API carves them — **not** as one `context.cocktail/`.
+
+This project has no `store/` layer: TanStack Query is the only cache, and there is no Zustand.
+A context grows `util/` or `constants/` only when it actually has something that fits neither
+`_domain/` nor a component.
 
 ---
 
-## 1. Layer Responsibilities
+## 1. Layer responsibilities
 
-### Data Layer (`data/`)
+### Data layer (`data/`)
 
-The data layer is the **anti-corruption layer** between the backend API and the domain.
+The data layer is the **anti-corruption layer** between the API and the domain.
 
-| Allowed                                                      | Forbidden                  |
-| ------------------------------------------------------------ | -------------------------- |
-| Calls through the shared typed fetch wrapper                  | Business rule logic        |
-| Zod schema validation on request/response                    | React imports              |
-| Adapter transformations (API shape to domain shape)          | UI rendering               |
-| Registering providers in the central provider registry        | Direct domain calculations |
+| Allowed | Forbidden |
+|---|---|
+| `fetchApi` calls with a Zod `schema` | Business rules |
+| Adapter transformations (API shape → domain shape) | React imports |
+| Reading paths from `API_ENDPOINTS` | UI, JSX, classNames |
 
-```typescript
-// context.customer/data/getCustomer.ts
+One provider function per endpoint, named for what it does:
 
-const customerAdapter = createApiResponseAdapter<TCustomerType, TCustomer>(
-  (customerRes) => ({
-    ...customerRes,
-    data: {
-      ...customerRes.data,
-      createdAt: customerRes.data.createdAt
-        ? new Date(customerRes.data.createdAt)
-        : null,
-      categoryId: customerRes.data.categoryId
-        ? Number(customerRes.data.categoryId)
-        : null,
-    },
-  }),
-);
+```ts
+// src/context.bar/data/getBarMatches.ts
+export async function getBarMatches(opts: {
+    data: { barId: number };
+    signal?: AbortSignal;
+}): Promise<TBarMatches> {
+    const response = await fetchApi(API_ENDPOINTS.barMatches(opts.data.barId), {
+        schema: barMatchesSchema,
+        signal: opts.signal,
+    });
 
-export const getCustomer = async (opts: { data: { customerId: string } }) => {
-  const res = await fetchApi(`customers/${opts.data.customerId}`, {
-    method: "GET",
-    schema: { data: customerSchema },
-  });
-
-  return customerAdapter(res);
-};
+    return barMatchesAdapter(response);
+}
 ```
 
 **Rules:**
 
-- Every provider function MUST include a Zod `schema` for response validation.
-- Use `createAdapter` or `createApiResponseAdapter` when the API response shape differs from the domain type (e.g., string dates to `Date` objects).
-- The adapter is the ONLY place where API-to-domain conversion happens. Components and hooks never see raw API shapes.
-- Every provider MUST be registered in the project's central provider registry, under the map matching its kind (plain read, paginated read, or write).
-- Never call `fetch` or `axios` directly. Always go through the project's shared fetch wrapper, so auth, scoping, error shaping and schema validation are applied consistently.
+- Every provider that expects a body MUST pass a Zod `schema`. Without one `fetchApi` resolves to
+  `null`, which is correct for the API's `204`s and wrong for anything else.
+- Accept `signal` and pass it through, so TanStack Query can abort the request on unmount.
+- Take arguments as a single `opts` object with a `data` key, matching `getUser` / `login`.
+- The adapter is the **only** place API shapes become domain shapes. Components and hooks never
+  see a raw API shape.
+- Never call `fetch` or `axios` directly — always `fetchApi`, so CSRF, the 419 retry, error
+  shaping and parsing all apply (see [app-structure.md](app-structure.md) §7).
+- Read paths from `API_ENDPOINTS`, never a string literal.
 
-### Domain Layer (`_domain/`)
+### Domain layer (`_domain/`)
 
-The domain layer defines the **shape of business data** and **pure business logic**. It has zero React dependencies.
+Defines the **shape of the data** and **pure logic**. Zero React, zero network.
 
-| Allowed                                                    | Forbidden                                    |
-| ---------------------------------------------------------- | -------------------------------------------- |
-| Zod schemas (`model.schemas.*.ts`)                         | React imports (`useState`, `useEffect`, JSX) |
-| TypeScript types derived from schemas (`model.types.*.ts`) | API calls or network logic                   |
-| Enum constants with Zod integration (`model.enum.*.ts`)    | UI references (classNames, DOM)              |
-| Pure utility functions (`model.util.*.ts`)                 | Side effects of any kind                     |
-| Label maps, icon maps, status maps                         | Framework-specific code                      |
+| Allowed | Forbidden |
+|---|---|
+| Zod schemas (`model.schemas.*.ts`) | React (`useState`, `useEffect`, JSX) |
+| Types derived via `z.infer` | `fetch`, `fetchApi`, any I/O |
+| Enum constants + label / icon / class maps | classNames beyond semantic token strings in a map |
+| Pure functions | Side effects of any kind |
 
-```typescript
-// context.order/_domain/model.enum.order.ts
+The file-naming convention in this project is `model.schemas.<thing>.ts`, holding **both** shapes
+when they differ — `src/context.auth/_domain/model.schemas.user.ts` is the example:
 
-export const ORDER_STATE = {
-  ACTIVE: "ACTIVE",
-  EXPIRED: "EXPIRED",
-  PROCESSING: "PROCESSING",
-  FULFILLED: "FULFILLED",
-} as const;
-
-export const orderStateEnum = z.nativeEnum(ORDER_STATE);
-
-export const ORDER_STATE_LABEL_MAP = {
-  [orderStateEnum.enum.ACTIVE]: "Active",
-  [orderStateEnum.enum.EXPIRED]: "Expired",
-  [orderStateEnum.enum.PROCESSING]: "Processing",
-  [orderStateEnum.enum.FULFILLED]: "Fulfilled",
-} as const;
-```
-
-```typescript
-// context.customer/_domain/model.types.customer.ts
-
-export const customerSchema = z.object({
-  id: z.string(),
-  label: z.string(),
-  name: z.string().nullable(),
-  status: customerStatusEnum,
-  // ...
+```ts
+export const userSchema = z.object({            // the API shape: snake_case, ISO strings
+    id: z.number(),
+    email_verified_at: z.string().nullable(),
+    created_at: z.string(),
 });
 
-export const customerResourceSchema = customerSchema.merge(
-  z.object({
-    createdAt: z.date().nullable(),
-    categoryId: z.number().nullable(),
-  }),
-);
-
-export type TCustomerType = z.infer<typeof customerSchema>; // API shape
-export type TCustomer = z.infer<typeof customerResourceSchema>; // Domain shape
-
-export const emptyCustomer: Omit<TCustomer, "id"> = {
-  label: "",
-  name: "",
-  status: customerStatusEnum.enum.ACTIVE,
-  // ...
-};
-```
-
-**Rules:**
-
-- Zod schemas are the **single source of truth**. Types are always derived via `z.infer<typeof schema>`.
-- Never use `interface`. Always use `type`.
-- Separate API shape (`TCustomerType`) from domain shape (`TCustomer`) when they differ. The adapter in the data layer converts between them.
-- Enums follow the pattern: `const object` + `z.nativeEnum()` + label map.
-- Pure utility functions in `model.util.*.ts` must be testable without React context.
-- Domain files MUST NOT import from `components/`, `hooks/`, `data/`, or `store/`.
-
-### Hook Layer (`hooks/`)
-
-Hooks are the **bridge** between React state and the domain/data layers.
-
-| Allowed                                         | Forbidden                                      |
-| ----------------------------------------------- | ---------------------------------------------- |
-| `useData` / `useDataMutation` calls             | Direct `fetch` / `axios` calls                 |
-| React state management (`useState`, `useMemo`)  | Business logic that belongs in `_domain/`      |
-| Composing domain functions with React lifecycle | Rendering JSX                                  |
-| Query invalidation via `useQueryClient`         | Data transformation that belongs in an adapter |
-
-```typescript
-// context.customer/hooks/useSaveCustomer.tsx
-
-export const useSaveCustomer = ({ onSuccess }: { onSuccess?: () => void }) => {
-  const { isPending, call, error } = useDataMutation({
-    provider: "updateCustomer",
-    onSuccess,
-  });
-
-  return {
-    saveCustomer: call,
-    isSavingCustomer: isPending,
-    saveCustomerErrors: error,
-  };
-};
-```
-
-**Rules:**
-
-- Hooks wrap `useData` or `useDataMutation` and return a **domain-friendly interface** (renamed fields, composed logic).
-- Hooks MUST NOT contain inline business logic. Delegate calculations to domain utility functions.
-- Hooks MUST NOT render JSX.
-- Return an object with descriptive names (`saveCustomer`, `isSavingCustomer`) instead of generic React Query names (`mutate`, `isPending`).
-- **Extract cross-cutting concerns into dedicated hooks from the start.** When a feature requires data fetching (`useData`, `useParams`) + business rule evaluation + UI state management (modals, refs, pending state), bundle these into a single purpose-specific hook. The component receives a clean interface and only orchestrates when to call what. Do NOT start with logic inline in the component and refactor later.
-
-### View Layer (`components/`)
-
-Components render UI. They consume hooks and domain types but never access the data layer directly.
-
-| Allowed                                   | Forbidden                      |
-| ----------------------------------------- | ------------------------------ |
-| JSX rendering                             | Direct `fetchApi` calls |
-| Consuming hooks (`useData`, domain hooks) | Inline business logic          |
-| Tailwind classes from theme               | Hardcoded colors, `style={{}}` |
-| `<Icon>` component                        | Raw SVG                        |
-| `<Form>` component with Zod resolver      | Untyped forms                  |
-
-**Rules:**
-
-- Components are **pure functions of their props** whenever possible.
-- Container components compose hooks and pass data down to presentational children.
-- Max 200 lines per component file. Decompose if exceeded.
-- Max 50 lines per function. Extract if exceeded.
-- **Components MUST NOT fetch data for business rule evaluation.** If a component needs server data to make a decision (e.g., checking limits, validating transitions, conditional interception), that data fetching + business logic MUST live in a dedicated hook. The component only calls the hook and wires results to JSX.
-
----
-
-## 2. Dependency Direction (Strict)
-
-```
-components/ -> hooks/ -> _domain/
-                    \-> data/    -> _domain/
-```
-
-- `components/` MAY import from `hooks/`, `_domain/`, `constants/`, `util/`.
-- `hooks/` MAY import from `data/` (via `useData`/`useDataMutation`), `_domain/`, `store/`.
-- `data/` MAY import from `_domain/` (schemas, types).
-- `_domain/` MUST NOT import from `components/`, `hooks/`, `data/`, or `store/`.
-
-**Never reverse dependencies.** The domain layer is the foundation; everything depends on it, but it depends on nothing above it.
-
----
-
-## 3. Strategy Pattern (Replace Scattered Conditionals)
-
-When the same conditional logic appears (or would appear) in multiple files, encapsulate it in the domain layer using a **map object** or **strategy function**.
-
-### BAD: Shotgun Surgery
-
-```typescript
-// file1.tsx
-const icon =
-  status === "ACTIVE"
-    ? "check.svg"
-    : status === "EXPIRED"
-      ? "x.svg"
-      : "clock.svg";
-
-// file2.tsx
-const label =
-  status === "ACTIVE" ? "Active" : status === "EXPIRED" ? "Expired" : "Pending";
-
-// file3.tsx
-const color =
-  status === "ACTIVE"
-    ? "text-success"
-    : status === "EXPIRED"
-      ? "text-error"
-      : "text-warning";
-```
-
-Adding a new status requires changes in 3+ files.
-
-### GOOD: Encapsulated in Domain
-
-```typescript
-// _domain/model.enum.order.ts
-export const ORDER_STATE_LABEL_MAP = {
-  [orderStateEnum.enum.ACTIVE]: "Active",
-  [orderStateEnum.enum.EXPIRED]: "Expired",
-  [orderStateEnum.enum.PROCESSING]: "Processing",
-} as const;
-
-export const ORDER_STATE_ICON_MAP = {
-  [orderStateEnum.enum.ACTIVE]: "check.svg",
-  [orderStateEnum.enum.EXPIRED]: "x.svg",
-  [orderStateEnum.enum.PROCESSING]: "clock.svg",
-} as const;
-
-export const ORDER_STATE_CLASS_MAP = {
-  [orderStateEnum.enum.ACTIVE]: "text-success",
-  [orderStateEnum.enum.EXPIRED]: "text-error",
-  [orderStateEnum.enum.PROCESSING]: "text-warning",
-} as const;
-```
-
-```typescript
-// components/OrderStatusBadge.tsx
-export const OrderStatusBadge = ({ state }: { state: TOrderState }) => (
-    <span className={ORDER_STATE_CLASS_MAP[state]}>
-        <Icon src={ORDER_STATE_ICON_MAP[state]} size={4} />
-        {ORDER_STATE_LABEL_MAP[state]}
-    </span>
-)
-```
-
-Adding a new status = one change in `_domain/`, zero changes in components.
-
-**Rules:**
-
-- When a value varies by enum/state, create a `*_MAP` constant in the domain layer.
-- Components read from maps, never branch on raw enum values.
-- Always use `satisfies` on map constants to enforce exhaustiveness. For a map keyed by an enum type, use `satisfies Record<TEnumType, ValueType>`. Combine with `as const` to preserve literal types: `} as const satisfies Record<TChannel, string>`. This catches missing enum cases at compile time.
-- For complex behavior that varies by type, use a **strategy function map**:
-
-```typescript
-// _domain/model.util.lineItem.ts
-type TLineItemStrategy = {
-  getLabel: (item: TLineItem) => string;
-  calculateTotal: (item: TLineItem) => number;
-};
-
-export const LINE_ITEM_STRATEGY_MAP: Record<TOrderItemType, TLineItemStrategy> =
-  {
-    [ORDER_ITEM_TYPES.STANDARD]: {
-      getLabel: (item) => `Standard - ${item.name}`,
-      calculateTotal: (item) => item.monthlyRate * item.quantity,
-    },
-    [ORDER_ITEM_TYPES.PREMIUM]: {
-      getLabel: (item) => `Premium - ${item.name}`,
-      calculateTotal: (item) => item.unitPrice * item.quantity,
-    },
-  };
-```
-
----
-
-## 4. Data Flow Patterns
-
-### Reading Data
-
-```
-Component
-  -> useData({ provider: 'getCustomer' }, { customerId })
-    -> provider registry resolves getCustomer function
-      -> getCustomer() calls fetchApi() with Zod schema
-        -> Zod validates response
-          -> createApiResponseAdapter transforms to domain type
-            -> returns CreateApiResponse<TCustomer>
-              -> useData returns { data, isLoading, isError, error }
-```
-
-```typescript
-// In a component
-const { data, isLoading } = useData(
-  { provider: "getCustomer", enabled: !!customerId },
-  { data: { customerId } },
-);
-```
-
-### Writing Data
-
-```
-Component
-  -> useDataMutation({ provider: 'updateCustomer' })
-    -> returns { call, isPending, error, bind }
-      -> call({ customer: { ...formData, id } })
-        -> updateCustomer() calls fetchApi() with method + body + schema
-          -> onSuccess: showToast() + queryClient.invalidateQueries()
-```
-
-```typescript
-// In a hook
-const { call, isPending, error } = useDataMutation({
-  provider: "updateCustomer",
-  onSuccess: () => {
-    showToast("Customer saved!", "success");
-    queryClient.invalidateQueries({ queryKey: ["getCustomer"] });
-  },
+export const userResourceSchema = z.object({    // the domain shape: camelCase, Date
+    id: z.number(),
+    emailVerifiedAt: z.date().nullable(),
+    createdAt: z.date(),
 });
+
+export type TUserType = z.infer<typeof userSchema>;      // API
+export type TUser = z.infer<typeof userResourceSchema>;   // domain
 ```
 
-### Form Flow
+**Rules:**
 
-```
-<Form form={useForm({ resolver: zodResolver(schema), defaultValues })}>
-  -> <Fields /> uses useFormContext() for inputs
-  -> <Footer /> uses useFormContext().handleSubmit()
-    -> Zod validates form data
-      -> onSubmit(data: z.infer<typeof schema>)
-        -> useDataMutation.call({ ...data })
-          -> success: showToast + invalidateQueries
-          -> error: setErrors(getFormErrors(error))
-```
+- Zod schemas are the **single source of truth**. Types are always derived via
+  `z.infer<typeof schema>`, never hand-written alongside.
+- The `TFooType` / `TFoo` pair names the API shape and the domain shape. Keep the suffix
+  convention — it is how a reader knows which side of the adapter they are on.
+- Never `interface`. Always `type`.
+- `_domain/` MUST NOT import from `components/`, `hooks/` or `data/`. Ever.
+- Pure functions must be testable with no DOM, no query client and no network. That is the entire
+  reason this layer exists.
 
-```typescript
-// Container: composes form + mutation
-export const CustomerForm = ({ customer, onSave }: TCustomerFormProps) => {
-    const { saveCustomer, saveCustomerErrors } = useSaveCustomer({ onSuccess: onSave })
+### Hook layer (`hooks/`)
 
-    const customerForm = useForm({
-        resolver: zodResolver(customerFormSchema),
-        mode: 'onChange',
-        defaultValues: {
-            name: customer.name,
-            displayName: customer.displayName,
+Hooks **bridge** React to the domain and data layers.
+
+| Allowed | Forbidden |
+|---|---|
+| `useQuery` / `useMutation` | Direct `fetch` / `axios` |
+| React state, `useMemo` | Business rules that belong in `_domain/` |
+| `useQueryClient().invalidateQueries` | JSX |
+| Composing a provider with a query key | Transformation that belongs in an adapter |
+
+One file per hook, kebab-cased, returning **domain-friendly names**:
+
+```ts
+// src/context.auth/hooks/use-login.ts
+export function useLogin({ onSuccess }: { onSuccess?: () => void } = {}) {
+    const queryClient = useQueryClient();
+
+    const { mutateAsync, isPending, error } = useMutation({
+        mutationFn: (data: TLoginCredentials) => login({ data }),
+        onSuccess: async () => {
+            await queryClient.invalidateQueries({ queryKey: AUTH_QUERY_KEY });
+            onSuccess?.();
         },
-    })
+    });
 
-    const onSubmit = (data: TCustomerForm) => {
-        saveCustomer({ customer: { ...data, id: customer.id } })
-    }
-
-    return (
-        <Form form={customerForm} onSubmit={onSubmit}>
-            <CustomerFields customerId={customer.id} />
-            <CustomerFormFooter />
-        </Form>
-    )
-}
-
-// Presentational: renders fields using form context
-export const CustomerFields = ({ customerId }: { customerId: string }) => {
-    const { register } = useFormContext<TCustomerForm>()
-
-    return (
-        <div className="flex flex-col gap-3">
-            <Input {...register('name')} label="Name" />
-            <Input {...register('displayName')} label="Display Name" />
-        </div>
-    )
-}
-
-// Action: handles submit via form context
-export const CustomerFormFooter = () => {
-    const { handleSubmit } = useFormContext<TCustomerForm>()
-    const { setErrors } = useFormContextExtended()
-    const { saveCustomer, isSavingCustomer, saveCustomerErrors } = useSaveCustomer({
-        onError: (err) => setErrors?.(getFormErrors(err)),
-    })
-
-    return (
-        <Button onClick={handleSubmit(saveCustomer)} isLoading={isSavingCustomer}>
-            Save
-        </Button>
-    )
+    return { logIn: mutateAsync, isLoggingIn: isPending, logInError: error };
 }
 ```
 
 **Rules:**
 
-- Forms ALWAYS receive server data via props (not fetched inside the form).
-- Forms ALWAYS use `zodResolver(schema)` for validation.
-- Never use `FieldValues` type from React Hook Form. Always use `z.infer<typeof schema>`.
-- Split form into: Container (schema + mutation), Fields (inputs via `useFormContext`), Footer (submit action).
+- **One query or one mutation per hook.** No `useBarActions` god hook bundling create, update and
+  delete — each action has its own success handling, its own error handling and its own
+  invalidation, and bundling them means every caller takes a dependency on all three.
+- Return renamed fields (`logIn`, `isLoggingIn`, `logInError`), not raw `mutate` / `isPending` /
+  `error`. The call site should read as domain language, and a component that destructures
+  `isPending` from two hooks has to rename them anyway.
+- **Export the query key as a `const` from the hook that owns it** —
+  `export const AUTH_QUERY_KEY = ['auth', 'user'] as const` — and import it wherever it is
+  invalidated. A key written as a literal in two places is a cache bug waiting to happen: the
+  invalidation silently matches nothing.
+- Hooks MUST NOT contain inline business logic; delegate to `_domain/` pure functions.
+- Hooks MUST NOT render JSX.
+- **Extract cross-cutting concerns into a hook from the start.** When a feature needs a query plus
+  a rule evaluation plus UI state (a dialog, a pending flag), that belongs in one purpose-built
+  hook, and the component only wires the result to JSX. Do not start with it inline "to refactor
+  later".
+
+### View layer (`components/`)
+
+| Allowed | Forbidden |
+|---|---|
+| JSX | `fetchApi`, or any direct data-layer import |
+| Hooks from `hooks/`, domain types from `_domain/` | Inline business logic |
+| Semantic theme classes | Hardcoded colours, `style={{}}` |
+| `lucide-react` icons via `components/ui/icon.tsx` | Raw `<svg>` |
+| React Hook Form + `zodResolver` | Untyped forms |
+
+**Rules:**
+
+- Components are pure functions of their props wherever possible.
+- **Max ~200 lines per file, ~50 lines per function.** Decompose past that.
+- Named exports everywhere except `src/app/pages/`, where `React.lazy` requires a default.
+- **A component MUST NOT fetch in order to decide a rule.** If it needs server data to make a
+  decision, the fetch *and* the decision go in a hook.
+- Build forms with `useForm({ resolver: zodResolver(schema) })` directly. There is no shared
+  `<Form>` wrapper and no `useFormContext` split in this project; `login-form.tsx` is the shape
+  to copy.
 
 ---
 
-## 5. State Management Hierarchy
+## 2. Dependency direction (strict)
+
+- `components/` MAY import `hooks/`, `_domain/`, `common/`.
+- `hooks/` MAY import `data/`, `_domain/`.
+- `data/` MAY import `_domain/`, `common/lib/api/`.
+- `_domain/` MUST NOT import from `components/`, `hooks/` or `data/`.
+
+**Never reverse an arrow.** The concrete payoff: `_domain/` tests need no query client, no router
+and no network stub, so the schemas and pure functions — the parts most likely to be subtly wrong
+— are also the cheapest parts to test. Import `data/` into `_domain/` and that property is gone
+for the whole context, not just for the one file that did it.
+
+Across contexts, import another context's `_domain/` types if you must, never its `data/`. Two
+contexts that need the same provider are telling you the provider belongs in neither.
+
+---
+
+## 3. Strategy maps (replace scattered conditionals)
+
+When a value varies by enum, encapsulate it in `_domain/` as a map rather than branching at each
+call site.
+
+### BAD — shotgun surgery
+
+```tsx
+// three files, each branching on the same enum
+const label = tier === 'MAKEABLE' ? 'Ready' : tier === 'SUBSTITUTION' ? 'With a swap' : 'One short';
+const icon  = tier === 'MAKEABLE' ? Check  : tier === 'SUBSTITUTION' ? Replace     : ShoppingCart;
+const cls   = tier === 'MAKEABLE' ? 'text-accent-700' : '…';
+```
+
+Adding a fourth tier means finding three files, and missing one is a silent wrong label.
+
+### GOOD — encapsulated in the domain
+
+```ts
+// src/context.bar/_domain/model.enum.match-tier.ts
+export const MATCH_TIER = {
+    MAKEABLE: 'MAKEABLE',
+    SUBSTITUTION: 'SUBSTITUTION',
+    ONE_SHORT: 'ONE_SHORT',
+} as const;
+
+export const matchTierEnum = z.enum(MATCH_TIER);
+export type TMatchTier = z.infer<typeof matchTierEnum>;
+
+export const MATCH_TIER_LABEL_MAP = {
+    [MATCH_TIER.MAKEABLE]: 'Ready to make',
+    [MATCH_TIER.SUBSTITUTION]: 'Makeable with a substitution',
+    [MATCH_TIER.ONE_SHORT]: 'One ingredient short',
+} as const satisfies Record<TMatchTier, string>;
+```
+
+```tsx
+export function MatchTierBadge({ tier }: { tier: TMatchTier }) {
+    return <Badge className={MATCH_TIER_CLASS_MAP[tier]}>{MATCH_TIER_LABEL_MAP[tier]}</Badge>;
+}
+```
+
+Adding a tier is one change in `_domain/` and zero in components — and the `satisfies` makes the
+omission a compile error instead of an `undefined` on screen.
+
+**Rules:**
+
+- **Always `as const satisfies Record<TEnumType, ValueType>`** on a map keyed by an enum. `as
+  const` preserves the literal types; `satisfies` enforces exhaustiveness. Neither alone does
+  both.
+- Components read from maps; they never branch on a raw enum value.
+- **Zod v4 note:** this project is on Zod 4, where `z.enum()` accepts a const object directly.
+  Older examples (and plenty of blog posts) use `z.nativeEnum()`, which is deprecated — and
+  `.merge()` on object schemas is likewise superseded by `.extend()`.
+- Important: a map keyed by match tier renders a decision the **API** made. Deriving the tier
+  itself in TypeScript is forbidden by the root `CLAUDE.md`. The map turns a server answer into
+  pixels; it does not compute the answer.
+
+---
+
+## 4. Data flow
+
+### Reading
+
+```
+Component
+  └─ useBarMatches(barId)                       hooks/use-bar-matches.ts
+       └─ useQuery({ queryKey: BAR_MATCHES_QUERY_KEY(barId), queryFn })
+            └─ getBarMatches({ data: { barId }, signal })   data/getBarMatches.ts
+                 └─ fetchApi(path, { schema })              → Zod parses
+                      └─ barMatchesAdapter(response)        → domain shape
+```
+
+### Writing
+
+```
+Component
+  └─ const { addStock } = useAddStock({ onSuccess })
+       └─ useMutation({ mutationFn: addStock })
+            └─ onSuccess: invalidateQueries({ queryKey: BAR_QUERY_KEY })
+```
+
+Invalidate, do not hand-patch. A mutation that writes the server's new state into the cache by
+hand is asserting it knows what the server decided — and in this app the server decides
+everything that matters.
+
+### Forms
+
+```
+useForm({ resolver: zodResolver(schema), defaultValues })
+  └─ handleSubmit(async values => {
+         try { await mutateAsync(values) }
+         catch (error) {
+             if (!applyApiErrors(error, setError))   // 422 → field errors
+                 setError('root', { message: … })    // anything else → form-level
+         }
+     })
+```
+
+**Rules:**
+
+- Forms receive server data via props; they do not fetch it themselves.
+- Always `zodResolver(schema)` with the schema from `_domain/`. Never an inline schema in a
+  component — it is untestable and duplicated the moment a second form touches the same fields.
+- Type the form from the schema: `useForm<TLoginCredentials>`. Never React Hook Form's
+  `FieldValues`.
+- **Always handle both error channels.** `applyApiErrors` returns `false` when the error was not a
+  `422`; that is the signal to set a form-level `root` error. Dropping the fallback means a 500
+  shows an untouched form and no explanation.
+- Reset sensitive fields on failure — `resetField('password')` — so a retry starts clean.
+
+---
+
+## 5. State management hierarchy
 
 Use the **least powerful tool** that solves the problem:
 
-| Priority | Tool                                  | When to Use                                                       |
-| -------- | ------------------------------------- | ----------------------------------------------------------------- |
-| 1        | React Query cache (`useData`)         | Server-derived data (default choice)                              |
-| 2        | URL search params (`useSearchParams`) | Panel state, filters, navigation state                            |
-| 3        | Component-local `useState`            | UI-only state (toggling, hover, form input)                       |
-| 4        | `useFormContext` (React Hook Form)    | Form field state                                                  |
-| 5        | Zustand store                         | Cross-component client state that doesn't belong in URL or server |
+| Priority | Tool | When |
+|---|---|---|
+| 1 | TanStack Query cache | Anything server-derived — the default |
+| 2 | URL search params (`useSearchParams` from `react-router`) | Filters, selected tab, anything shareable or refresh-surviving |
+| 3 | `useState` | UI-only state: a dialog, a hover, an uncontrolled toggle |
+| 4 | React Hook Form state | Form fields |
 
 **Rules:**
 
-- React Query is the **single source of truth** for server state. Never duplicate it into Zustand or Context.
-- Zustand stores use `createSelectors` for auto-generated selectors: `useStore.use.propertyName()`.
-- Never subscribe to the entire Zustand store. Always select specific properties.
-- Prefer URL search params over Zustand for state that should survive page refresh or be shareable.
-
-### Zustand Store Pattern (with Immer)
-
-When Zustand is needed, use the `immer` middleware for immutable state updates for complex objects:
-
-```typescript
-// store/useSelectionStore.ts
-export const useSelectionStore = create<TSelectionState & TSelectionActions>()(
-  immer((set) => ({
-    selection: { state: {}, rows: {} },
-    selectionData: {},
-
-    setSelection: (groupId, state, keepOld = false) =>
-      set((draft) => {
-        draft.selection.state = keepOld
-          ? { ...draft.selection.state, ...state }
-          : state;
-      }),
-
-    updateSelectionItem: (itemId, groupId, newData) =>
-      set((draft) => {
-        const items = draft.selectionData?.[groupId];
-        const index = items?.findIndex((item) => item.id === itemId) ?? -1;
-
-        if (index !== -1) {
-          draft.selectionData[groupId][index] = {
-            ...draft.selectionData[groupId][index],
-            ...newData,
-          };
-        }
-      }),
-  })),
-);
-```
-
-Immer lets each action mutate a `draft` and still produce a new immutable state, which keeps
-deeply-nested updates readable — the alternative is a tower of spread operators that is easy to
-get subtly wrong.
+- TanStack Query is the **single source of truth** for server state. Never mirror fetched data
+  into `useState` — the copy goes stale the moment the cache refetches, and now two renders
+  disagree.
+- Prefer search params over component state for anything a user might reload, bookmark or share.
+- `useSearchParams` here is **React Router's**, from `react-router`. It is not the Next.js hook of
+  the same name, and there is no server render to coordinate with.
+- There is **no global client-state library** in this project, by decision. If you believe a
+  feature needs one, that is a PR discussion and a dependency approval, not a quiet `npm i`.
 
 ---
 
-## 6. Domain Modeling (No Classes)
+## 6. Domain modelling (no classes)
 
-Model domains with **Zod schemas + type inference + pure functions** instead of classes. The
-schema carries the validation rules, the inferred type carries the shape, and pure functions
-carry the behaviour.
+Model with **Zod schemas + inferred types + pure functions**, not classes. The schema carries the
+validation rules, the type carries the shape, functions carry the behaviour.
 
-### Schema as Source of Truth
-
-```typescript
-// _domain/model.schemas.customer.ts (validation rules)
-export const customerFormSchema = z.object({
-  name: z.string().min(2).max(100),
-  displayName: z.string().nullable(),
-  reference: z.string().nullable(),
-});
-
-// _domain/model.types.customer.ts (types derived from schema)
-export type TCustomerForm = z.infer<typeof customerFormSchema>;
-```
-
-### Enum + Label Map + Icon Map (Strategy via Maps)
-
-```typescript
-// _domain/model.enum.order.ts
-export const ORDER_STATE = { ACTIVE: "ACTIVE", EXPIRED: "EXPIRED" } as const;
-export const orderStateEnum = z.nativeEnum(ORDER_STATE);
-export type TOrderState = z.infer<typeof orderStateEnum>;
-
-export const ORDER_STATE_LABEL_MAP = {
-  [orderStateEnum.enum.ACTIVE]: "Active",
-  [orderStateEnum.enum.EXPIRED]: "Expired",
-} as const satisfies Record<TOrderState, string>;
-
-export const ORDER_STATE_ICON_MAP = {
-  [orderStateEnum.enum.ACTIVE]: "check.svg",
-  [orderStateEnum.enum.EXPIRED]: "clock.svg",
-} as const satisfies Record<TOrderState, string>;
-
-export const ORDER_STATE_CLASS_MAP = {
-  [orderStateEnum.enum.ACTIVE]: "bg-success",
-  [orderStateEnum.enum.EXPIRED]: "bg-warning",
-} as const satisfies Record<TOrderState, string>;
-```
-
-The class maps reference **semantic theme tokens** (`bg-success`), never literal palette values —
-see the project's theme config for the available tokens.
-
-### Pure Domain Utility Functions
-
-```typescript
-// _domain/model.util.customer.ts
-export const formatCustomerLabel = (customer: TCustomer): string =>
-  customer.name ?? `${customer.firstName} ${customer.lastName}`;
-
-export const isCustomerActive = (customer: TCustomer): boolean =>
-  customer.status === CUSTOMER_STATUS.ACTIVE;
+```ts
+// _domain/model.util.measure.ts
+export function formatMeasure(ml: number, unit: TDisplayUnit): string { … }
 ```
 
 **Rules:**
 
-- Never use classes for domain modeling. Use Zod schemas + types + pure functions.
-- Every enum follows: `const OBJECT` + `z.nativeEnum()` + `z.infer` type + label/icon/class maps.
-- All `*_MAP` constants keyed by an enum type MUST use `as const satisfies Record<TEnumType, ValueType>` to enforce exhaustiveness at compile time.
-- Domain utility functions are pure: same input, same output, no side effects.
-- Empty/default state objects (`emptyCustomer`) live in `model.types.*.ts`.
+- Never use classes for domain modelling.
+- Pure functions only: same input, same output, no side effects, no `Date.now()` read inside.
+- Default/empty objects (`emptyIngredient`) live beside the types they belong to.
+- **Measures are a trap, not an exercise.** The API stores canonical millilitres and tells the
+  client what to display; `parts` is a ratio, not a volume. A formatting helper that turns a
+  server-supplied number into a string is fine. Arithmetic that converts, scales or sums measures
+  belongs on the server — see the root `CLAUDE.md` § *The API owns identity, units and ranking*.
 
 ---
 
-## 7. Adapter as Anti-Corruption Layer
+## 7. The adapter as anti-corruption layer
 
-The adapter pattern isolates API shape changes from the rest of the application.
-
-```typescript
-// data/getCustomer.ts
-import { createApiResponseAdapter } from "@/common/util/adapter";
-
-// This is the ONLY place that knows the API returns dates as strings
-const customerAdapter = createApiResponseAdapter<TCustomerType, TCustomer>(
-  (res) => ({
-    ...res,
-    data: {
-      ...res.data,
-      createdAt: res.data.createdAt ? new Date(res.data.createdAt) : null,
-    },
-  }),
-);
+```ts
+// src/context.auth/data/user.adapter.ts — the whole pattern, in one plain function
+export function userAdapter(user: TUserType): TUser {
+    return {
+        id: user.id,
+        avatar: user.avatar ?? null,
+        emailVerifiedAt: user.email_verified_at ? new Date(user.email_verified_at) : null,
+        createdAt: new Date(user.created_at),
+    };
+}
 ```
 
 **Rules:**
 
-- Use `createAdapter` for raw data transformations.
-- Use `createApiResponseAdapter` for `CreateApiResponse<T>` wrapper transformations.
-- Adapters live in the `data/` folder, next to the provider function that uses them.
-- If the API shape matches the domain type exactly, no adapter is needed.
-- When the API changes, ONLY the adapter changes. No component or hook modifications.
+- An adapter is a plain exported function, `<thing>.adapter.ts`, beside the provider that uses it.
+  There is no adapter factory in this project.
+- It is the **only** module that knows the API sends snake_case keys and ISO date strings.
+- No adapter is needed when the shapes already match — do not add an identity function for
+  symmetry.
+- **When the API changes, only the adapter and its schema change.** If an API rename forces edits
+  in a component, the adapter was not doing its job.
+- Adapters are pure and trivially testable — `user.adapter.test.ts` is the example. Test the
+  nullable and date-parsing branches; they are where the bugs are.
 
 ---
 
-## 8. Error Handling Flow
-
-Errors flow through a structured pipeline:
+## 8. Error handling
 
 ```
-fetchApi throws DetailedError
-  -> useData/useDataMutation catches it
-    -> Categorizes blame: 'user' | 'server' | 'runtime'
-      -> useData returns { data, isLoading, isError, error }
-      -> useDataMutation returns { call, isPending, isError, error } (+ error.getDetails().blame for categorization)
-```
-
-### In Forms
-
-```typescript
-const { call, error } = useDataMutation({
-  provider: "updateCustomer",
-  onError: (err) => {
-    // Server validation errors (422) -> set on form fields
-    setErrors?.(getFormErrors(err));
-  },
-});
-```
-
-### In Components
-
-```typescript
-const { data, isLoading, isError } = useData({ provider: 'getCustomer' }, { data: { customerId } })
-
-if (isLoading) return <Skeleton />
-if (isError) return <ErrorState />
-
-return <CustomerDetails customer={data.data} />
+fetchApi throws ValidationError | UnauthenticatedError | ApiError
+  └─ useQuery / useMutation surfaces it as `error`
+       ├─ in a form:      applyApiErrors(error, setError), else setError('root', …)
+       └─ in a view:      isPending → Spinner;  isError → AlertError;  else render
 ```
 
 **Rules:**
 
-- Never `try/catch` around `useData` or `useDataMutation`. Use the returned `error`, `isLoading`, and `isError` properties.
-- Form validation errors: Zod schema (client) + `getFormErrors(error)` (server 422).
-- Use `showToast` for user-facing notifications on mutation success/failure.
+- Never `try/catch` around a `useQuery`. Use `isPending` / `isError` / `error`.
+- **Do** `try/catch` around an awaited `mutateAsync` in a submit handler — that is where form
+  error mapping happens.
+- Narrow errors with the type guards in `common/lib/api/errors.ts` (`isValidationError`,
+  `isUnauthenticatedError`, `isApiError`), never by reading `error.status` off `unknown`.
+- Use `sonner`'s `toast` for transient success/failure notices; use `AlertError` for an error the
+  user must act on.
+- A `401` surfacing anywhere other than `getUser` means a guard should have caught it — fix the
+  routing tier, do not swallow it locally.
 
 ---
 
-## 9. Testing Per Layer
+## 9. Testing per layer
 
-### Domain Layer (`_domain/`): Pure Unit Tests
+Vitest + React Testing Library, `*.test.ts(x)` beside the code.
 
-```typescript
-describe("formatCustomerLabel", () => {
-  it("returns the name when available", () => {
-    const customer = { ...emptyCustomer, id: "1", name: "Acme" };
-    expect(formatCustomerLabel(customer)).toBe("Acme");
-  });
+| Layer | Test | Needs |
+|---|---|---|
+| `_domain/` | Pure unit tests — schema `safeParse`, pure functions | nothing |
+| `data/` | Adapter tests: nullable fields, date parsing, key renames | nothing |
+| `hooks/` | Behaviour against a mocked provider | a `QueryClientProvider` wrapper |
+| `components/` | RTL: what the user sees and does | providers + router wrapper |
+
+```ts
+// _domain/model.schemas.credentials.test.ts — the existing example
+it('rejects a password shorter than the minimum', () => {
+    expect(loginSchema.safeParse({ email: 'a@b.c', password: '' }).success).toBe(false);
 });
-```
-
-No React, no mocks, no providers. Fast and deterministic.
-
-### Data Layer (`data/`): Schema Validation Tests
-
-```typescript
-describe("customerSchema", () => {
-  it("validates a correct customer object", () => {
-    const result = customerSchema.safeParse(validCustomer);
-    expect(result.success).toBe(true);
-  });
-
-  it("rejects missing required fields", () => {
-    const result = customerSchema.safeParse({});
-    expect(result.success).toBe(false);
-  });
-});
-```
-
-### Hook Layer (`hooks/`): Integration Tests
-
-```typescript
-describe("useSaveCustomer", () => {
-  it("calls updateCustomer provider on save", async () => {
-    // Mock the provider, test the hook behavior
-  });
-});
-```
-
-### View Layer (`components/`): Component Tests with RTL
-
-```typescript
-describe('CustomerForm', () => {
-    it('renders the name field', () => {
-        render(
-            <MockWrapper>
-                <CustomerForm customer={mockCustomer} formTitle="Edit" />
-            </MockWrapper>,
-        )
-        expect(screen.getByLabelText('Name')).toBeInTheDocument()
-    })
-})
 ```
 
 **Rules:**
 
-- Test user-visible behavior, not implementation details.
-- Use `getByText`, `getByRole`, `getByLabelText`. Avoid `data-testid` except for icons and skeletons.
-- Mock paths use full relative paths, never path aliases — alias resolution in the test runner often differs from the bundler's, and a mock that silently fails to apply produces a passing test of the real implementation.
-- Wrap components in the project's shared test wrapper so query client, router and theme providers are present.
+- Test user-visible behaviour, not implementation details.
+- Query by role, label and text (`getByRole`, `getByLabelText`, `getByText`). This codebase uses a
+  `data-test` attribute where nothing semantic exists — keep that rare.
+- **Mock by full relative path, never a path alias.** Vitest's resolution can differ from Vite's,
+  and a mock that fails to apply produces a passing test of the real implementation — the worst
+  possible outcome, because it looks green.
+- The `it('…')` string is the explanation. No comment above it.
+- Prefer a `_domain/` test over a component test for anything that is really a rule. It is faster,
+  it cannot flake, and it fails with a clearer message.
 
 ---
 
-## 10. Anti-Patterns
+## 10. Anti-patterns
 
-| Anti-Pattern                                          | Why It's Wrong                       | Correct Approach                                                                             |
-| ----------------------------------------------------- | ------------------------------------ | -------------------------------------------------------------------------------------------- |
-| `fetchApi` inside a component                  | Couples view to network layer        | Create a provider in `data/`, consume via `useData`                                          |
-| Business logic in `useEffect`                         | Untestable, lifecycle-coupled        | Extract to pure function in `_domain/model.util.*`                                           |
-| Same conditional in 3+ files                          | Shotgun surgery on every change      | Create a `*_MAP` in `_domain/model.enum.*`                                                   |
-| Inline Zod schema in component                        | Duplicated, untestable validation    | Define in `_domain/model.schemas.*`, import it                                               |
-| `z.infer` on an anonymous schema                      | No reusable type                     | Name the schema, export both schema and type                                                 |
-| `interface TProps`                                    | Inconsistent with `type` convention  | `type TProps = { ... }`                                                                      |
-| `class CustomerService`                               | Classes are not the modeling unit here | Pure functions + Zod schemas + type inference                                              |
-| Zustand store for server data                         | Stale, duplicated state              | Use React Query cache via `useData`                                                          |
-| Raw API types in components                           | Coupled to external system           | Use adapter to convert to domain types                                                       |
-| `any` type                                            | Unsafe, defeats TypeScript           | Use `unknown` + type narrowing, or proper typing                                             |
-| `console.log` left in code                            | Debug noise in production            | Remove. Only `console.warn` and `console.error` allowed                                      |
-| Prop spreading `{...props}`                           | Hidden dependencies, hard to trace   | Pass properties explicitly                                                                   |
-| `useData`/`useParams` in component for business logic | Mixes data+logic+state in view layer | Extract a dedicated hook that owns data fetching, business rule, and UI state (modals, refs) |
+| Anti-pattern | Why it is wrong | Instead |
+|---|---|---|
+| `fetchApi` in a component | Couples the view to the network | Provider in `data/`, consumed through a hook |
+| Bare `fetch` / `axios` anywhere | Skips CSRF, the 419 retry, error shaping and parsing | `fetchApi` |
+| A provider with no `schema` | Unvalidated API data reaches the UI | Pass the Zod schema |
+| Recomputing a match tier, score or ranking | The API owns interpretation | Render the tier you were given |
+| Unit arithmetic on a measure | ml / oz / parts drift and `parts` is not a volume | Display what the server sent |
+| A hardcoded ingredient or substitution list | Second source of truth; will drift from the database | Fetch it |
+| Business logic in `useEffect` | Untestable, lifecycle-coupled | Pure function in `_domain/` |
+| Fetched data copied into `useState` | Two sources of truth; goes stale on refetch | Read from the query cache |
+| The same conditional in 3+ files | Shotgun surgery on every change | A `*_MAP` in `_domain/` |
+| Inline Zod schema in a component | Duplicated, untestable | Define it in `_domain/` |
+| A query key written as a literal twice | Invalidation silently matches nothing | Export the key const |
+| God hook (`useBarActions`) | Bundles unrelated mutations and their failure modes | One mutation per hook |
+| `interface TProps` | Inconsistent with the `type` convention | `type TProps = { … }` |
+| `class IngredientService` | Not the modelling unit here | Schemas + types + pure functions |
+| `any` | Defeats TypeScript | `unknown` + narrowing, or type it properly |
+| Raw API shapes in a component | Couples the view to an external system | Adapt to the domain shape first |
+| Hardcoded colour or `style={{}}` | Breaks theming and dark mode | Semantic theme tokens |
+| Raw `<svg>` outside `components/ui/` | Bypasses sizing and a11y handling | `lucide-react` via the `Icon` component |
+| `console.log` left in | Debug noise in production | Remove it |
+| Prop spreading `{...props}` | Hidden dependencies, hard to trace | Pass props explicitly |
 
 ---
 
-## 11. Checklist Before Completing Any Feature
+## 11. Checklist before completing a feature
 
-- [ ] Domain types/schemas live in `_domain/` with `model.schemas.*` / `model.types.*` / `model.enum.*` naming
-- [ ] Data providers live in `data/` and are registered in the central provider registry
-- [ ] Adapters handle API-to-domain conversion in `data/` (not in hooks or components)
-- [ ] Hooks in `hooks/` bridge `useData`/`useDataMutation` to components with domain-friendly names
-- [ ] Components in `components/` only use hooks and domain types, never call the data layer directly
-- [ ] Components do NOT use `useData`/`useParams` for business rule evaluation — extract a dedicated hook instead
-- [ ] Enums use `const object` + `z.nativeEnum()` + label/icon/class maps
-- [ ] No scattered conditionals; all enum-dependent values use `*_MAP` objects
-- [ ] Forms use `zodResolver(schema)` and split into Container, Fields, and Footer
-- [ ] No `interface`, no `any`, no `default export`, no `style={{}}`
-- [ ] Tests exist for each layer: domain (pure), data (schema), hooks (integration), components (RTL)
-- [ ] The project's test, typecheck, and lint commands all pass
+- [ ] Schemas and types in `_domain/` as `model.schemas.*.ts`, types via `z.infer`
+- [ ] API shape and domain shape distinguished (`TFooType` / `TFoo`) where they differ
+- [ ] A provider per endpoint in `data/`, each passing a Zod schema and accepting `signal`
+- [ ] Path added to `API_ENDPOINTS`, not written at the call site
+- [ ] An adapter where shapes differ, with a test for its nullable and date branches
+- [ ] One query or one mutation per hook, domain-friendly return names, query key exported
+- [ ] Components take hooks and domain types only — no data-layer import, no inline rules
+- [ ] No interpretation logic: no tier derivation, scoring, ranking or measure arithmetic
+- [ ] Enum-dependent values come from `*_MAP` consts with `as const satisfies Record<…>`
+- [ ] Forms use `zodResolver`, `applyApiErrors`, **and** a `root` fallback
+- [ ] No `interface`, no `any`, no hardcoded colour, no `style={{}}`, no default export outside
+      `app/pages/`
+- [ ] Tests per layer: domain (pure), adapter, hook, component
+- [ ] `npm run ci:check` passes, and you say what it said

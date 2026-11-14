@@ -16,7 +16,6 @@ import {
     SidebarMenuButton,
     SidebarMenuItem,
 } from '@/common/components/ui/sidebar';
-import { NavUser } from '@/context.auth/components/nav-user';
 
 export function AppSidebar() {
     return (
@@ -25,7 +24,7 @@ export function AppSidebar() {
                 <SidebarMenu>
                     <SidebarMenuItem>
                         <SidebarMenuButton size="lg" asChild>
-                            <Link to={ROUTES.dashboard}>
+                            <Link to={ROUTES.home}>
                                 <AppLogo />
                             </Link>
                         </SidebarMenuButton>
@@ -39,7 +38,6 @@ export function AppSidebar() {
 
             <SidebarFooter>
                 <NavFooter items={footerNavItems} className="mt-auto" />
-                <NavUser />
             </SidebarFooter>
         </Sidebar>
     );

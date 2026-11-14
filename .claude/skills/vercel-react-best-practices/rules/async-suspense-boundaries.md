@@ -1,99 +1,72 @@
 ---
-title: Strategic Suspense Boundaries
+title: Scope Loading Boundaries to the Slow Part
 impact: HIGH
-impactDescription: faster initial paint
-tags: async, suspense, streaming, layout-shift
+impactDescription: faster perceived paint, no whole-page blanking
+tags: async, suspense, loading-state, skeleton
 ---
 
-## Strategic Suspense Boundaries
+## Scope Loading Boundaries to the Slow Part
 
-Instead of awaiting data in async components before returning JSX, use Suspense boundaries to show the wrapper UI faster while data loads.
+Don't make the whole screen wait for the slowest thing on it. Render the shell immediately and
+show a loading state only where the data is actually missing.
 
-**Incorrect (wrapper blocked by data fetching):**
+(Upstream this rule is about streaming async Server Components. There is no server render here, so
+the SPA form is about where loading state lives — same goal, different mechanism.)
+
+**Incorrect (one flag blanks the page):**
 
 ```tsx
-async function Page() {
-  const data = await fetchData() // Blocks entire page
-  
-  return (
-    <div>
-      <div>Sidebar</div>
-      <div>Header</div>
-      <div>
-        <DataDisplay data={data} />
-      </div>
-      <div>Footer</div>
-    </div>
-  )
+function BarPage() {
+    const { bar, isLoadingBar } = useBar()
+    const { matches, isLoadingMatches } = useBarMatches()
+
+    if (isLoadingBar || isLoadingMatches) return <Spinner />   // ✗ header and nav vanish too
+
+    return (
+        <AppLayout>
+            <Heading title={bar.name} />
+            <MatchList matches={matches} />
+        </AppLayout>
+    )
 }
 ```
 
-The entire layout waits for data even though only the middle section needs it.
+The layout, heading and navigation are all withheld for data only the list needs — and every
+refetch flashes the page back to a spinner.
 
-**Correct (wrapper shows immediately, data streams in):**
+**Correct (the shell renders, the slow region has its own state):**
 
 ```tsx
-function Page() {
-  return (
-    <div>
-      <div>Sidebar</div>
-      <div>Header</div>
-      <div>
-        <Suspense fallback={<Skeleton />}>
-          <DataDisplay />
-        </Suspense>
-      </div>
-      <div>Footer</div>
-    </div>
-  )
-}
+function BarPage() {
+    const { bar, isLoadingBar } = useBar()
 
-async function DataDisplay() {
-  const data = await fetchData() // Only blocks this component
-  return <div>{data.content}</div>
+    return (
+        <AppLayout>
+            {isLoadingBar ? <Skeleton className="h-8 w-48" /> : <Heading title={bar.name} />}
+
+            <MatchListSection />      {/* owns its own query and its own skeleton */}
+        </AppLayout>
+    )
 }
 ```
 
-Sidebar, Header, and Footer render immediately. Only DataDisplay waits for data.
+**Rules:**
 
-**Alternative (share promise across components):**
+- **Put the loading state next to the data that is missing**, which usually means the component
+  that calls the hook owns the skeleton. A page that destructures four `isLoading` flags is a page
+  that should have been four components.
+- **A skeleton shaped like the content beats a spinner.** It reserves the right space, so content
+  arriving does not shove the page around.
+- **Do not reuse the app-wide `Suspense` in `main.tsx` as a data boundary.** It exists for lazy
+  route chunks; anything that falls through to it blanks the viewport.
+- **Independent queries run in parallel already.** Two hooks in one component fire together —
+  TanStack Query does not serialise them. A waterfall only appears when one query's `enabled` or
+  key depends on another's result, and that is worth avoiding: ask the API for one payload that
+  answers both instead. The root `CLAUDE.md` makes this the API's job anyway.
+- `useSuspenseQuery` is available if you prefer a `Suspense` boundary to an `isPending` branch.
+  Pick one per feature and be consistent; mixing both in one tree makes the loading behaviour hard
+  to reason about.
 
-```tsx
-function Page() {
-  // Start fetch immediately, but don't await
-  const dataPromise = fetchData()
-  
-  return (
-    <div>
-      <div>Sidebar</div>
-      <div>Header</div>
-      <Suspense fallback={<Skeleton />}>
-        <DataDisplay dataPromise={dataPromise} />
-        <DataSummary dataPromise={dataPromise} />
-      </Suspense>
-      <div>Footer</div>
-    </div>
-  )
-}
-
-function DataDisplay({ dataPromise }: { dataPromise: Promise<Data> }) {
-  const data = use(dataPromise) // Unwraps the promise
-  return <div>{data.content}</div>
-}
-
-function DataSummary({ dataPromise }: { dataPromise: Promise<Data> }) {
-  const data = use(dataPromise) // Reuses the same promise
-  return <div>{data.summary}</div>
-}
-```
-
-Both components share the same promise, so only one fetch occurs. Layout renders immediately while both components wait together.
-
-**When NOT to use this pattern:**
-
-- Critical data needed for layout decisions (affects positioning)
-- SEO-critical content above the fold
-- Small, fast queries where suspense overhead isn't worth it
-- When you want to avoid layout shift (loading → content jump)
-
-**Trade-off:** Faster initial paint vs potential layout shift. Choose based on your UX priorities.
+**When a single blocking state is right:** a route guard deciding whether the user may be here at
+all (`RequireAuth` renders a spinner, deliberately — rendering the page first would flash content
+to someone about to be redirected).

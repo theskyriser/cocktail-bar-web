@@ -77,42 +77,26 @@ const enrichedUserSchema = z.object({
 const enrichedUser = await enrichedUserSchema.parseAsync({ userId: '123' })
 ```
 
-**Pattern for API routes:**
+**Async refinements belong on the server, not in this app**
 
-```typescript
-import { z } from 'zod'
-import { NextRequest, NextResponse } from 'next/server'
+An async refinement exists to ask a database something — "is this email already registered?" In
+`cocktail-bar-web` there is no database and no server runtime, so a schema here never needs to be
+async. That check lives in `cocktail-bar-api`, which answers a `422` with `{message, errors}`, and
+this app renders it:
 
-const registerSchema = z.object({
-  email: z.string().email(),
-  password: z.string().min(8),
-}).superRefine(async (data, ctx) => {
-  const existingUser = await db.users.findByEmail(data.email)
-  if (existingUser) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      path: ['email'],
-      message: 'Email already registered',
-    })
-  }
-})
-
-export async function POST(req: NextRequest) {
-  const body = await req.json()
-
-  // Always use safeParseAsync with async schemas
-  const result = await registerSchema.safeParseAsync(body)
-
-  if (!result.success) {
-    return NextResponse.json({ errors: result.error.issues }, { status: 400 })
-  }
-
-  // Proceed with registration
+```ts
+try {
+    await registerUser(values)
+} catch (error) {
+    if (!applyApiErrors(error, setError)) {
+        setError('root', { message: 'Could not create your account.' })
+    }
 }
 ```
 
-**When NOT to use this pattern:**
-- Schemas with only synchronous validation (use parse/safeParse)
-- When async validation can be moved outside Zod (validate, then check)
+Reaching for `safeParseAsync` in a client schema is a sign the validation is being duplicated on
+the wrong side of the wire — and a client-side uniqueness check is advisory at best, since nothing
+stops the request being made anyway. Keep client schemas synchronous: shape, required fields,
+lengths, formats. Anything needing data the client does not have is the API's answer to give.
 
-Reference: [Zod API - parseAsync](https://zod.dev/api#parseasync)
+Reference: [Zod API — parseAsync](https://zod.dev/api#parseasync)

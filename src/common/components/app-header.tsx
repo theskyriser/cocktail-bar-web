@@ -30,7 +30,6 @@ import {
 import { useCurrentUrl } from '@/common/hooks/use-current-url';
 import { cn } from '@/common/lib/utils';
 import type { BreadcrumbItem } from '@/common/types';
-import { UserAvatarMenu } from '@/context.auth/components/user-avatar-menu';
 
 type Props = {
     breadcrumbs?: BreadcrumbItem[];
@@ -106,7 +105,7 @@ export function AppHeader({ breadcrumbs = [] }: Props) {
                     </div>
 
                     <Link
-                        to={ROUTES.dashboard}
+                        to={ROUTES.home}
                         className="flex items-center space-x-2"
                     >
                         <AppLogo />
@@ -170,7 +169,6 @@ export function AppHeader({ breadcrumbs = [] }: Props) {
                                 </Tooltip>
                             ))}
                         </div>
-                        <UserAvatarMenu />
                     </div>
                 </div>
             </div>

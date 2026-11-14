@@ -1,202 +1,161 @@
 ---
 paths:
-  - "**/*.{ts,tsx,js,jsx}"
+  - "**/*.{ts,tsx}"
 ---
 
 # Infinite Scrolling & Pagination
 
-Applies when the backend returns a **standard Laravel paginator envelope** (as produced by
-Laravel/Spatie Laravel-Data) and the frontend consumes it with TanStack Query's infinite queries.
+**Nothing in this project paginates yet.** Read this before adding the first paginated list, and
+update it to match what you actually built.
 
-Define the paginator meta once as a shared schema and reuse it everywhere — every paginated
-endpoint returns the same envelope, so re-declaring it per feature is duplication that drifts.
+Applies when `cocktail-bar-api` returns a Laravel paginator envelope and this app consumes it with
+TanStack Query's `useInfiniteQuery`. There is no `fetchPaginationApi` wrapper and no provider
+registry here — a paginated endpoint is an ordinary provider in a context's `data/` folder that
+happens to take a page argument.
+
+## 1. Define the envelope once
+
+Laravel returns the same meta for every paginated endpoint, so declare it once in a shared place
+(`src/common/lib/api/pagination.ts` when the first one lands) and compose it per resource:
 
 ```ts
-export const paginationSchema = z.object({
-  currentPage: z.number(),
-  firstPageUrl: z.string().nullable().optional(),
-  from: z.number().nullable().optional(),
-  lastPage: z.number().nullable().optional(),
-  lastPageUrl: z.string().nullable().optional(),
-  nextPageUrl: z.string().nullable().optional(),
-  path: z.string().nullable().optional(),
-  perPage: z.number().nullable().optional(),
-  prevPageUrl: z.string().nullable().optional(),
-  to: z.number().nullable().optional(),
-  total: z.number().nullable().optional(),
+export const paginationMetaSchema = z.object({
+    current_page: z.number(),
+    last_page: z.number(),
+    per_page: z.number(),
+    total: z.number(),
 });
+
+export function paginatedSchema<T extends ZodType>(item: T) {
+    return z.object({ data: z.array(item), meta: paginationMetaSchema });
+}
 ```
 
-## Handling the Paginated Data
+Re-declaring the meta per feature is duplication that drifts the moment Laravel's shape changes.
+Note the keys stay **snake_case** here, because this schema describes the API shape; the adapter
+is what renames them.
 
-Create a fetch function for the paginated endpoint, in the data layer of the feature that owns it.
-Use the project's **pagination-aware** fetch wrapper rather than the plain one — it is what appends
-the page and filter query parameters and validates the envelope:
+## 2. The provider takes a page
 
 ```ts
-export const getItems = async ({
-  page,
-  filters,
-}: {
-  page: number;
-  filters?: ReadOnlyURLSearchParams;
-}) => {
-  const searchParams = filters.toString();
-  const { data, meta } = await fetchPaginationApi({
-    endpoint: "items",
-    page,
-    filters: searchParams,
-    opts: {
-      schema: {
-        data: getItemsResponseSchema,
-      },
-    },
-  });
+// src/context.recipe/data/getRecipes.ts
+export async function getRecipes(opts: {
+    data: { page: number; search?: string };
+    signal?: AbortSignal;
+}): Promise<TRecipePage> {
+    const params = new URLSearchParams({ page: String(opts.data.page) });
 
-  return { data, meta };
-};
-```
+    if (opts.data.search) {
+        params.set('search', opts.data.search);
+    }
 
-If the project registers data providers in a central map keyed by name, add the new fetcher there
-so the shared infinite-data hook can resolve it, then expose a thin named hook per endpoint:
-
-```ts
-export const useGetItems = () => useInfiniteData({ provider: "getItems" });
-```
-
-Such a hook should return both the raw `pages` and a flattened `infiniteData` — the concatenation
-of every page loaded so far, which is what an infinite list renders.
-
-## Infinite Scrolling
-
-With the steps above in place, build the list on top of the infinite-data hook. Detect that the
-user has reached the end of the scroll with the
-[Intersection Observer API](https://developer.mozilla.org/en-US/docs/Web/API/Intersection_Observer_API) —
-observe the last rendered element and fetch the next page when it becomes visible:
-
-```tsx
-const { infiniteData, isLoading, fetchNextPage, hasNextPage, isFetching } =
-  useGetItems();
-const observer = useRef<IntersectionObserver>(null);
-const lastElementRef = useCallback(
-  (node: HTMLDivElement) => {
-    if (isLoading || isFetching || !hasNextPage) return;
-    if (observer.current) observer.current.disconnect();
-
-    observer.current = new IntersectionObserver((entries) => {
-      if (entries[0].isIntersecting) {
-        fetchNextPage();
-      }
+    const response = await fetchApi(`${API_ENDPOINTS.recipes}?${params}`, {
+        schema: paginatedSchema(recipeSchema),
+        signal: opts.signal,
     });
 
-    if (node) observer.current.observe(node);
-  },
-  [fetchNextPage, hasNextPage, isFetching, isLoading],
-);
-
-if (isLoading) return <InitialLoadingState />;
-
-return (
-  <div className="flex flex-col gap-4">
-    {infiniteData.map((item) => (
-      <div key={item.id} ref={lastElementRef}>
-        <div className="flex flex-row gap-2">{item.label}</div>
-      </div>
-    ))}
-
-    {isFetching && <LoadingMoreState />}
-  </div>
-);
+    return recipePageAdapter(response);
+}
 ```
 
-Note the two distinct loading states: the initial load replaces the list, while fetching a
-subsequent page appends below it and must not unmount what is already on screen.
+## 3. One hook, `useInfiniteQuery`
 
-> **URL Search Params**
->
-> If the query is filtered by URL search params, you **must** pass them through the `filters`
-> parameter rather than building the URL yourself. The shared hook formats them *and* folds them
-> into the query key — otherwise two different filter states share one cache entry and show each
-> other's results.
+```ts
+// src/context.recipe/hooks/use-recipes.ts
+export const RECIPES_QUERY_KEY = (search?: string) =>
+    ['recipes', { search: search ?? '' }] as const;
 
-### Infinite Scrolling with Virtualizer
+export function useRecipes({ search }: { search?: string } = {}) {
+    const query = useInfiniteQuery({
+        queryKey: RECIPES_QUERY_KEY(search),
+        queryFn: ({ pageParam, signal }) =>
+            getRecipes({ data: { page: pageParam, search }, signal }),
+        initialPageParam: 1,
+        getNextPageParam: (last) =>
+            last.meta.currentPage < last.meta.lastPage
+                ? last.meta.currentPage + 1
+                : undefined,
+    });
 
-For long lists, virtualize: render only the rows in (and just outside) the viewport. With a
-virtualizer such as TanStack Virtual, drop the `IntersectionObserver` and drive pagination from
-the virtualizer's own item range instead — the sentinel element is never rendered when it is far
-off screen.
+    return {
+        recipes: query.data?.pages.flatMap((page) => page.data) ?? [],
+        isLoadingRecipes: query.isPending,
+        isLoadingMoreRecipes: query.isFetchingNextPage,
+        hasMoreRecipes: query.hasNextPage,
+        loadMoreRecipes: query.fetchNextPage,
+    };
+}
+```
 
-Pass `infiniteData` down to a child component so the virtualized view never has to handle
-undefined or empty data:
+Three things earn their place:
+
+- **`getNextPageParam` returning `undefined` is how pagination ends.** Returning the same page
+  number instead loops forever, fetching the last page on every scroll.
+- **Flatten in the hook, not the component.** The view wants a list; `pages` is a cache detail.
+- **Filters belong in the query key.** `RECIPES_QUERY_KEY(search)` means two searches are two
+  cache entries. Leave the filter out and the first search's results are served for the second —
+  with no refetch, because the key matched.
+
+## 4. Driving the fetch from the viewport
+
+Observe a sentinel after the last row with `IntersectionObserver` and fetch when it appears:
 
 ```tsx
-const { infiniteData, hasNextPage, isFetchingNextPage, fetchNextPage } =
-  useInfiniteData({
-    provider: "getItems",
-  });
-
-const virtualizer = useVirtualizer({
-  count: hasNextPage ? infiniteData.length + 1 : infiniteData.length,
-  getScrollElement: () => parentRef.current,
-  estimateSize: () => 60,
-  overscan: 5,
-});
+const sentinelRef = useRef<HTMLDivElement>(null);
 
 useEffect(() => {
-  const [lastItem] = [...virtualizer.getVirtualItems()].reverse();
-  if (!lastItem) {
-    return;
-  }
-  if (
-    lastItem.index >= infiniteData.length - 1 &&
-    hasNextPage &&
-    !isFetchingNextPage
-  ) {
-    fetchNextPage();
-  }
-}, [
-  hasNextPage,
-  fetchNextPage,
-  infiniteData.length,
-  isFetchingNextPage,
-  virtualizer.getVirtualItems(),
-]);
+    const node = sentinelRef.current;
+
+    if (!node || !hasMoreRecipes || isLoadingMoreRecipes) {
+        return;
+    }
+
+    const observer = new IntersectionObserver(([entry]) => {
+        if (entry.isIntersecting) {
+            void loadMoreRecipes();
+        }
+    });
+
+    observer.observe(node);
+
+    return () => observer.disconnect();
+}, [hasMoreRecipes, isLoadingMoreRecipes, loadMoreRecipes]);
 ```
 
-The scroll container is the measured parent; an inner element is sized to the full virtual height
-so the scrollbar is correct, and each visible row is absolutely positioned at its measured offset:
+**Always return the disconnect function.** An observer left attached after unmount holds a
+reference to the node and fires into a dead component — and under `StrictMode`'s double-invoked
+effects you get two observers, so the bug shows up as pages being fetched twice.
+
+**Two distinct loading states, and they are not interchangeable:** the initial load replaces the
+list with a skeleton; loading a further page appends a spinner *below* rows already on screen and
+must not unmount them. Rendering one spinner for both is what makes a list flicker back to empty
+on every scroll.
+
+## 5. Virtualise only when it hurts
+
+For lists long enough to drop frames, render only the rows near the viewport with TanStack Virtual
+— and then drive pagination from the virtualiser's own item range rather than a sentinel, because
+a sentinel far off screen is never rendered to be observed:
 
 ```tsx
-<div ref={parentRef} className="h-[500px] w-full overflow-auto">
-  <div
-    className="relative w-full"
-    style={{ height: `${virtualizer.getTotalSize()}px` }}
-  >
-    {virtualizer.getVirtualItems().map((virtualRow) => {
-      const isLoaderRow = virtualRow.index > infiniteData.length - 1;
-
-      return (
-        <div
-          key={virtualRow.index}
-          className="absolute left-0 top-0 w-full"
-          style={{
-            height: `${virtualRow.size}px`,
-            transform: `translateY(${virtualRow.start}px)`,
-          }}
-        >
-          {isLoaderRow ? (
-            hasNextPage ? (
-              <LoadingMoreState />
-            ) : null
-          ) : (
-            <ItemRow item={infiniteData[virtualRow.index]} />
-          )}
-        </div>
-      );
-    })}
-  </div>
-</div>
+const virtualizer = useVirtualizer({
+    count: hasMoreRecipes ? recipes.length + 1 : recipes.length,
+    getScrollElement: () => parentRef.current,
+    estimateSize: () => 60,
+    overscan: 5,
+});
 ```
 
-Because the row count is `infiniteData.length + 1` while there is a next page, the extra trailing
-index *is* the loader row — that is what the `isLoaderRow` check renders.
+The extra trailing index when `hasMoreRecipes` **is** the loader row — that is what an
+`isLoaderRow = index > recipes.length - 1` check renders. Adding a virtualiser means a new
+dependency, so it needs approval; do not reach for it before a list is actually slow.
+
+## Rules
+
+- A paginated provider is a normal provider: `fetchApi`, a schema, a `signal`, an adapter.
+- Every filter that changes the result set goes in the query key.
+- Flatten pages in the hook; return domain-friendly names.
+- `getNextPageParam` must return `undefined` at the end.
+- Disconnect observers on unmount.
+- Server-side ordering is the server's: **sorting a column the API already ordered is fine,
+  re-ranking by match tier in the browser is not.**

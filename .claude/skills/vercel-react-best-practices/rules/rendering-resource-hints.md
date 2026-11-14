@@ -1,85 +1,63 @@
 ---
-title: Use React DOM Resource Hints
+title: Use Resource Hints for Critical Resources
 impact: HIGH
-impactDescription: reduces load time for critical resources
+impactDescription: removes a round trip from the critical path
 tags: rendering, preload, preconnect, prefetch, resource-hints
 ---
 
-## Use React DOM Resource Hints
+## Use Resource Hints for Critical Resources
 
-**Impact: HIGH (reduces load time for critical resources)**
+A hint tells the browser to start work it would otherwise only begin once it discovered the need.
+In a static-HTML SPA the earliest and cheapest place to put one is `index.html`, because it is
+parsed before the bundle exists.
 
-React DOM provides APIs to hint the browser about resources it will need. These are especially useful in server components to start loading resources before the client even receives the HTML.
+| Hint | Use for |
+|---|---|
+| `<link rel="preconnect">` | A third-party origin you will fetch from immediately (DNS + TCP + TLS up front) |
+| `<link rel="dns-prefetch">` | An origin you will probably use later — cheaper, weaker |
+| `<link rel="preload">` | A specific critical file (font, hero image) the parser would find late |
 
-- **`prefetchDNS(href)`**: Resolve DNS for a domain you expect to connect to
-- **`preconnect(href)`**: Establish connection (DNS + TCP + TLS) to a server
-- **`preload(href, options)`**: Fetch a resource (stylesheet, font, script, image) you'll use soon
-- **`preloadModule(href)`**: Fetch an ES module you'll use soon
-- **`preinit(href, options)`**: Fetch and evaluate a stylesheet or script
-- **`preinitModule(href)`**: Fetch and evaluate an ES module
+### What this project already does
 
-**Example (preconnect to third-party APIs):**
-
-```tsx
-import { preconnect, prefetchDNS } from 'react-dom'
-
-export default function App() {
-  prefetchDNS('https://analytics.example.com')
-  preconnect('https://api.example.com')
-
-  return <main>{/* content */}</main>
-}
+```html
+<link rel="preconnect" href="https://fonts.bunny.net" />
+<link href="https://fonts.bunny.net/css?family=cormorant-garamond:400,600|lora:400,500"
+      rel="stylesheet" />
 ```
 
-**Example (preload critical fonts and styles):**
+The stylesheet is on another origin, so without the `preconnect` the browser pays DNS + TLS before
+it can even start downloading it — and webfonts are on the critical path for text rendering.
 
-```tsx
-import { preload, preinit } from 'react-dom'
+**A hint worth adding** when the API is on its own subdomain in production, since the first
+`/api/user` fires the moment the bundle runs:
 
-export default function RootLayout({ children }) {
-  // Preload font file
-  preload('/fonts/inter.woff2', { as: 'font', type: 'font/woff2', crossOrigin: 'anonymous' })
-
-  // Fetch and apply critical stylesheet immediately
-  preinit('/styles/critical.css', { as: 'style' })
-
-  return (
-    <html>
-      <body>{children}</body>
-    </html>
-  )
-}
+```html
+<link rel="preconnect" href="https://api.example.com" crossorigin />
 ```
 
-**Example (preload modules for code-split routes):**
+`crossorigin` is required for a connection that will carry credentialed requests — this app sends
+cookies, and a preconnect opened without it is not reused.
+
+### Preloading a lazy route on intent
+
+React Router's `lazy()` chunks are fetched on navigation. Warming one on hover makes the
+transition feel instant, and it is just the same `import()` — the module cache dedupes it:
 
 ```tsx
-import { preloadModule, preinitModule } from 'react-dom'
+const preloadDashboard = () => void import('@/app/pages/dashboard')
 
-function Navigation() {
-  const preloadDashboard = () => {
-    preloadModule('/dashboard.js', { as: 'script' })
-  }
-
-  return (
-    <nav>
-      <a href="/dashboard" onMouseEnter={preloadDashboard}>
-        Dashboard
-      </a>
-    </nav>
-  )
-}
+<Link to={ROUTES.dashboard} onMouseEnter={preloadDashboard}>Dashboard</Link>
 ```
 
-**When to use each:**
+**Rules:**
 
-| API | Use case |
-|-----|----------|
-| `prefetchDNS` | Third-party domains you'll connect to later |
-| `preconnect` | APIs or CDNs you'll fetch from immediately |
-| `preload` | Critical resources needed for current page |
-| `preloadModule` | JS modules for likely next navigation |
-| `preinit` | Stylesheets/scripts that must execute early |
-| `preinitModule` | ES modules that must execute early |
+- Hint only what you are confident is needed. Every preload competes for bandwidth with what the
+  page genuinely needs now; a wrong guess makes things slower, not neutral.
+- `preconnect` to a handful of origins at most — each one holds an open connection.
+- Prefer a `<link>` in `index.html` over calling `react-dom`'s `preconnect`/`preload` from a
+  component: the HTML hint lands before the bundle is even parsed, and the react-dom APIs exist
+  mainly to let a server render emit these during streaming, which this app does not do.
+- Self-host a font instead of hinting a third party if first paint really matters; a `preconnect`
+  mitigates a cross-origin round trip, it does not remove it.
 
-Reference: [React DOM Resource Preloading APIs](https://react.dev/reference/react-dom#resource-preloading-apis)
+Reference: [MDN — rel=preconnect](https://developer.mozilla.org/en-US/docs/Web/HTML/Attributes/rel/preconnect)

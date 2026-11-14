@@ -4,7 +4,7 @@ Load the relevant section during Step 1 (Scope Resolution) after identifying lan
 
 ---
 
-## JavaScript / TypeScript (Node.js, React, Next.js, Express)
+## JavaScript / TypeScript (React, Node.js, Express)
 
 ### Critical APIs/calls to flag
 ```js
@@ -39,19 +39,17 @@ app.set('trust proxy', true)  // only safe behind known proxy
 <a href={userUrl}>link</a>  // javascript: URL injection
 ```
 
-### Next.js specific
-```js
-// Server Actions without auth
-export async function deleteUser(id) {   // missing: auth check
-  await db.users.delete(id)
-}
+### This SPA specifically
+```tsx
+<div dangerouslySetInnerHTML={{ __html: apiContent }} />  // XSS, even from your own API
 
-// API Routes missing method validation
-export default function handler(req, res) {
-  // Should check: if (req.method !== 'POST') return res.status(405)
-  doSensitiveAction()
-}
+fetch(url, { credentials: 'include' })        // bypasses fetchApi: no CSRF header, no schema
+localStorage.setItem('token', jwt)            // this app uses cookie auth; a token here is a bug
+
+const isAdmin = user.role === 'admin' && showDeleteButton   // client-side gate only
 ```
+Client-side authorization is presentation, never enforcement: the API must refuse the action.
+Hiding a control in React does not protect the endpoint behind it.
 
 ---
 
