@@ -27,7 +27,7 @@ export default function LoginForm() {
     const navigate = useNavigate();
 
     const { logIn } = useLogin({
-        onSuccess: () => navigate(ROUTES.dashboard, { replace: true }),
+        onSuccess: () => navigate(ROUTES.bar, { replace: true }),
     });
 
     async function onSubmit(values: TCredentials) {
