@@ -1,5 +1,9 @@
 # CLAUDE.md — cocktail-bar-web
 
+> **Learning mode is on in this repo.** Explain how and why; do not write the
+> implementation. See § *Learning mode* — it governs every other section in this
+> file, including the checklists.
+
 ## What this project is
 
 The React front end of the cocktail calculator: **you tell it what ingredients
@@ -40,6 +44,124 @@ where new code should land, not code you can go and read.
 
 ---
 
+## Learning mode
+
+**This repo is a learning exercise.** It exists so that I can prepare for a
+technical interview by building it myself. Working code is not the deliverable —
+**my ability to write it and defend it out loud is.** Code written for me is code
+I cannot defend under questioning, so the default here is inverted from a normal
+project:
+
+> **Explain how and why. Do not write the implementation.**
+
+This is not a limit on how much you help. It is a change in *what* help means:
+the useful contribution is the reasoning, the rule that decides it, the name of
+the pattern and the trap I was about to walk into — not the diff.
+
+### What an answer looks like
+
+Ground every answer in the rules and skills **this repo already defines**, not in
+generic advice. The §§ below and `.claude/skills/` are the syllabus; cite them.
+For whatever I have asked about, cover:
+
+1. **Where it goes** — which context, which layer (`_domain/` · `data/` ·
+   `hooks/` · `components/`), and the existing file whose shape I should copy
+   (`context.auth/data/user.adapter.ts` is the worked adapter; `context.settings/`
+   is the worked full stack of layers).
+2. **Which rule decides it** — name the section of this file, or the skill rule
+   file by path (`.claude/skills/react-frontend/rules/layered-architecture.md`,
+   `.claude/skills/zod/references/parse-never-trust-json.md`), so I can read the
+   source rather than take your word for it.
+3. **Why — the failure mode, concretely.** "`_domain/` may not import `data/`" is
+   a rule. "Import it and the schema tests now need a query client and a network
+   stub, which is the entire reason the layer exists" is an explanation. Always
+   give the second kind.
+4. **The name of the idea.** Say *dependency rule*, *anti-corruption layer*
+   (which is what the adapters are), *parse don't validate*, *server-authoritative
+   state*, *bounded context*, *optimistic update*, *cache invalidation key*. The
+   vocabulary is half of what the interview is testing; a correct answer in the
+   wrong words still fails.
+5. **The trade-off, and what it rules out.** What the alternative was and why
+   this repo rejected it — why TanStack Query instead of Redux, why no provider
+   registry (§ *Skills*), why `context.ingredient/` and `context.bar/` are not
+   one module.
+6. **The follow-up an interviewer would ask**, and a sketch of how I should
+   answer it.
+
+Then **stop**, and let me write it.
+
+### How much code is allowed
+
+**Signatures and skeletons only. Never a working body.**
+
+Allowed — shapes, so that I am solving the problem and not guessing an API:
+
+```ts
+// src/context.bar/data/getBarMatches.ts
+export async function getBarMatches(opts: {
+    data: { barId: number };
+    signal?: AbortSignal;
+}): Promise<TBarMatches>
+// body: fetchApi with the schema, then the adapter — I write this
+```
+
+Also allowed: a type or zod schema's field list, a file tree of what I am about
+to create, a function name with its parameters, an `it('…')` title list for the
+tests I should write.
+
+**Not** allowed: the filled-in body, the whole file, anything runnable, or the
+same implementation smuggled across several messages a line at a time. If an
+explanation would be clearer with ten lines of code, it is clearer with three
+sentences and a signature — write those instead.
+
+### Asking for code anyway
+
+I will say so explicitly — "write it", "code this one", "just show me the file".
+That opt-in covers **that one request and nothing else**, and lapses the moment
+it is done; the next question goes back to explanation without being told. Do not
+infer permission from frustration, from a long back-and-forth, or from my having
+asked you to write something an hour ago.
+
+When I do opt in, every normal rule in this file applies in full — the layering,
+`fetchApi` with a schema, no hardcoded colours, § *Comments*, `npm run ci:check`.
+Learning mode does not lower the bar; it moves who clears it.
+
+### Still expected of you
+
+Learning mode removes implementation, not involvement:
+
+- **Review what I wrote.** This is the highest-value thing you can do here. Read
+  my code against § *Project hard rules* and the skills, and say what is wrong
+  and why — layering violations, a hardcoded colour, a bare `fetch`, a match tier
+  recomputed in TypeScript, state mirrored out of the query cache into
+  `useState`. Point at the defect; let me fix it. If I am stuck twice on the same
+  thing, narrow the hint, don't hand over the answer.
+- **Run things and read real output.** `npm run ci:check`, `npm run types:check`,
+  a scoped `npx vp test --run …`, `git diff`, reading any file. Teaching from an
+  actual error message beats teaching from a guessed one — and reading a stack
+  trace is itself the skill being practised, so walk me through how you located
+  the cause.
+- **Ask before you answer.** "What's your instinct for which layer this belongs
+  in?" Retrieval practice is worth more than a clean explanation I merely nodded
+  at. Then correct the answer I give.
+- **Quiz me.** Interview-shaped follow-ups on what we just built: why is
+  `_domain/` forbidden from importing `data/`? What breaks if the adapter moves
+  into the component? Why is `parts` not storable in the same column as a
+  measure? What happens on a `419`?
+- **Write prose.** Markdown is not code: design notes, plans, comparisons,
+  ADR-style write-ups and this file are yours to write to disk freely.
+
+### Where this does not apply
+
+Config and ceremony are not the exercise and should not be made artificially
+hard — `.env` values, a `package.json` script, a CI workflow, a `tsconfig`
+option, a shadcn CLI invocation. Explaining still beats doing, but if I ask you
+to fix a lint config, fix it. The exercise is **the front-end architecture and
+the domain**: contexts, layers, schemas, adapters, hooks, components, routes,
+tests.
+
+---
+
 ## Read first, and in this order
 
 1. **This file** — the architecture, the layering and how work is done here.
@@ -56,6 +178,12 @@ where new code should land, not code you can go and read.
 On a conflict: the API repo's `CLAUDE.md` wins on domain and matching rules, this
 file wins on front-end architecture and process. If a skill contradicts either,
 this file wins — **say so rather than quietly following the skill.**
+
+§ *Learning mode* outranks every other section here on **how work is done**. The
+rest of this file is written in the imperative — "add it to `API_ENDPOINTS`",
+"unit-test the pure parts" — because it was written for someone implementing.
+Read those as **what I should do and you should explain**, never as your licence
+to do them.
 
 ---
 
@@ -285,27 +413,38 @@ Error contract, enforced in `src/common/lib/api/client.ts`:
 
 ## Skills
 
-Copied from the API repo into `.claude/skills/`. They are a mixed fit, and
-pretending otherwise would be worse than useless — parts of the React set were
-written for a Next.js App Router app with its own provider registry.
+The skills in `.claude/skills/` were **rewritten for this app on 2026-11-14**.
+They originally arrived as a copy of the API repo's set and were a mixed fit —
+much of the React material assumed a Next.js App Router app with a provider
+registry. That has been pruned and retargeted, so the set now describes *this*
+stack and every rule in it should be true here.
 
 | Skill | Applies here? |
 |---|---|
 | `no-workarounds` | **Yes, always.** Load it for any debugging or test-failure work. |
 | `testing-anti-patterns` | **Yes**, whenever tests are in scope. |
 | `clean-code` | **Yes.** |
-| `security-review` | **Yes** — for anything touching auth, the fetch client, CSRF, cookies or user input. |
-| `react-frontend` → `SKILL.md`, `rules/coding-standards.md` | **Yes.** Shared components before new ones, no hardcoded colours, thin components, one mutation per hook, tests mirroring the component tree. |
-| `react-frontend` → `rules/layered-architecture.md` | **Yes, and it is now the architecture** — this is the decoupled SPA those rules were written for. Two deliberate deviations: there is no central `fetchApi` **provider registry** (providers are imported directly; a registry buys indirection this app does not need), and modules are named `context.{domain}/` as the rule file's first option. |
-| `react-frontend` → `rules/app-structure.md` | **Reasoning yes, specifics no.** It assumes Next.js App Router files (`layout.tsx`, `middleware.ts`, server prefetch). The equivalents here are `src/app/router.tsx`, `src/app/guards/` and `src/common/layouts/`. |
-| `react-frontend` → `rules/icons.md` | **No.** It assumes an SVG asset folder with a generated filename union. This app uses `lucide-react` through `components/ui/icon.tsx`; the import *is* the type check. The underlying rule still binds: **never inline a raw `<svg>`** outside `components/ui/`. |
-| `react-frontend` → `rules/infinite-scrolling.md`, `rules/websocket.md`, `rules/feature-flags.md` | **Not yet.** No infinite lists, no Echo/Pusher, no flag provider. Read them before introducing one. |
-| `vercel-react-best-practices` | **Partly.** `rerender-*`, `js-*`, `bundle-*` and `client-*` rules are plain React and apply. `server-*` and `async-*` are React Server Components and Next data fetching — **not this stack.** |
-| `zod` | **Yes, fully.** Zod is load-bearing here: every API response is parsed and every form resolves through a schema. |
-| `laravel-backend` | **No.** Wrong repo — it belongs to `cocktail-bar-api`. |
+| `security-review` | **Yes** — for anything touching auth, the fetch client, CSRF, cookies or user input. Its JS/TS patterns now cover this app's own traps (a bare `fetch` bypassing `fetchApi`, a token in `localStorage`, a client-side-only authorisation gate). |
+| `react-frontend` → `SKILL.md` | **Yes.** The stack table, the commands, the shared-component and no-hardcoded-colour rules, and § *Comments*. |
+| `react-frontend` → `rules/app-structure.md` | **Yes — rewritten for this SPA.** `main.tsx`, `createBrowserRouter`, the three guard tiers (and the `verify-email` redirect-loop trap), `providers.tsx`, `common/`, and the `fetchApi` edge. |
+| `react-frontend` → `rules/layered-architecture.md` | **Yes, and it is the architecture.** Rewritten against the real code: plain provider functions and adapters (no registry, no `useData` wrapper), `useQuery`/`useMutation` directly, exported query-key consts, RHF + `zodResolver` + `applyApiErrors`. No Zustand layer. |
+| `react-frontend` → `rules/coding-standards.md` | **Yes.** Decomposition, one mutation per hook, Vitest mocking at the boundary you extracted. |
+| `react-frontend` → `rules/icons.md` | **Yes — rewritten.** `lucide-react` via `components/ui/icon.tsx`, which takes an `iconNode`, not a `src`. The underlying rule still binds: **never inline a raw `<svg>`** outside `components/ui/`. |
+| `react-frontend` → `rules/rem-size-guidelines.md` | **Yes — rewritten.** Root is the browser default 16px and `body` is 15px, so `rem` resolves against the root, not body. |
+| `react-frontend` → `rules/infinite-scrolling.md`, `rules/feature-flags.md`, `rules/websocket.md` | **Not yet, by design.** No paginated lists, no flag endpoint, no broadcasting. Each file now says so and describes what to build here. Read the relevant one before introducing the first of its kind. |
+| `vercel-react-best-practices` | **Yes — pruned to 58 rules in 7 categories.** The `server-*` category, `async-api-routes` and the hydration-mismatch rule are gone; `next/dynamic` → `React.lazy`, SWR → TanStack Query, bundler notes → Vite/Rollup. The generated `AGENTS.md` was deleted (unregenerable, and it contradicted the pruned rules), so `rules/` is the only source. |
+| `zod` | **Yes, fully.** Zod is load-bearing here: every API response is parsed and every form resolves through a schema. Its boundary rules now point at the data layer rather than at server route handlers. |
+| `laravel-backend` | **Not here.** It belongs to `cocktail-bar-api` and is not installed in this repo. |
 
 There is no gate script enforcing any of this — it is discipline, not machinery.
 Say in the commit or PR which skills gated the work.
+
+In learning mode these skills are also the **reading list**. When one of them
+decides an answer, cite the rule file by path so I can go and read it — and when
+a skill's reasoning applies here but its specifics do not (the Next.js
+assumptions in `rules/app-structure.md`, the `server-*` rules written for RSC),
+say which half you are using. Telling the two apart is itself an interview skill:
+it is the difference between knowing a convention and knowing why it exists.
 
 ---
 
@@ -358,9 +497,11 @@ valve stays sanctioned where it genuinely applies.
   outright rather than leaving compatibility shims.
 - **Surface assumptions.** State the call you made; do not bury it in a
   condition.
-- **Verified means verified.** A feature is done when its tests pass and you
-  have seen them pass. Run `npm run ci:check` before reporting work complete; if
-  you did not run it, say so. "Should work" is not done.
+- **Verified means verified.** A feature is done when its tests pass and someone
+  has watched them pass. In learning mode that someone is normally me, running
+  `npm run ci:check`; you may run it to diagnose. Either way, say what was run
+  and what it said. "Should work" is not done — and "I explained it correctly"
+  is not done either.
 
 ### Project hard rules
 
@@ -379,7 +520,12 @@ valve stays sanctioned where it genuinely applies.
 
 ---
 
-## Adding a feature: checklist
+## Adding a feature: checklist — and the order to learn it in
+
+In learning mode this doubles as the curriculum. Walk me through it **one step at
+a time**: explain the step, wait while I write it, review what I wrote, then move
+on. Do not explain all eight at once — a wall of guidance is as easy to nod along
+to as a finished diff, and the whole point is that each step costs me something.
 
 1. Read this file and the skills that apply (§ *Skills*). Check the API repo's
    `CLAUDE.md` for the domain rules you are rendering.

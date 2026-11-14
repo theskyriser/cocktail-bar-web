@@ -1,129 +1,91 @@
 ---
 title: Avoid Double Validation
 impact: HIGH
-impactDescription: Parsing the same data twice wastes CPU cycles; in hot paths this adds measurable latency
+impactDescription: re-parsing data already validated wastes work and hides where the real boundary is
 tags: parse, performance, optimization, architecture
 ---
 
 ## Avoid Double Validation
 
-Once data is validated by Zod, trust the result. Re-validating the same data in multiple layers doubles CPU usage and adds latency. Pass the typed result through your application instead.
+Once data has been parsed at the boundary, **trust it**. Re-validating the same object in a hook
+or a component costs CPU on every render and, worse, blurs the question of which layer actually
+owns the contract.
 
-**Incorrect (validating at every layer):**
+**Incorrect (parsed at every layer):**
 
-```typescript
-import { z } from 'zod'
-
-const userSchema = z.object({
-  id: z.string().uuid(),
-  email: z.string().email(),
-  name: z.string(),
-})
-
-// Controller validates
-export async function POST(req: NextRequest) {
-  const body = await req.json()
-  const user = userSchema.parse(body)  // First parse
-  return await userService.create(user)
+```ts
+// data/ — parsed here, correctly
+export async function getRecipes(opts: { signal?: AbortSignal }) {
+    return await fetchApi(API_ENDPOINTS.recipes, { schema: recipeListSchema, signal: opts.signal });
 }
 
-// Service validates again
-const userService = {
-  async create(data: unknown) {
-    const user = userSchema.parse(data)  // Second parse - redundant
-    return await userRepository.insert(user)
-  }
+// hooks/ — parsed again
+export function useRecipes() {
+    const { data } = useQuery({ queryKey: RECIPES_QUERY_KEY, queryFn: getRecipes });
+
+    return { recipes: recipeListSchema.parse(data) };   // ✗ redundant, and runs every render
 }
 
-// Repository validates again
-const userRepository = {
-  async insert(data: unknown) {
-    const user = userSchema.parse(data)  // Third parse - wasteful
-    return await db.users.create({ data: user })
-  }
+// components/ — parsed a third time
+function RecipeList({ recipes }: { recipes: unknown }) {
+    const parsed = recipeListSchema.parse(recipes);     // ✗ wasteful
 }
 ```
 
-**Correct (validate once, pass typed data):**
+Beyond the wasted work, the third parse means the component declares its prop as `unknown` — so it
+has thrown away the type the boundary already established, and every consumer now has to guess.
 
-```typescript
-import { z } from 'zod'
+**Correct (parse once, pass typed data):**
 
-const userSchema = z.object({
-  id: z.string().uuid(),
-  email: z.string().email(),
-  name: z.string(),
-})
+```ts
+// data/ — the single boundary
+export async function getRecipes(opts: { signal?: AbortSignal }): Promise<TRecipe[]> {
+    const response = await fetchApi(API_ENDPOINTS.recipes, {
+        schema: recipeListSchema,
+        signal: opts.signal,
+    });
 
-type User = z.infer<typeof userSchema>
-
-// Controller validates at boundary
-export async function POST(req: NextRequest) {
-  const body = await req.json()
-
-  const result = userSchema.safeParse(body)
-  if (!result.success) {
-    return NextResponse.json({ errors: result.error.issues }, { status: 400 })
-  }
-
-  // Pass validated, typed data
-  return await userService.create(result.data)
+    return recipeListAdapter(response);
 }
 
-// Service receives typed data, no re-validation needed
-const userService = {
-  async create(user: User) {
-    // user is guaranteed to match schema
-    return await userRepository.insert(user)
-  }
+// hooks/ — receives TRecipe[], no re-validation
+export function useRecipes() {
+    const { data, isPending } = useQuery({ queryKey: RECIPES_QUERY_KEY, queryFn: getRecipes });
+
+    return { recipes: data ?? [], isLoadingRecipes: isPending };
 }
 
-// Repository receives typed data
-const userRepository = {
-  async insert(user: User) {
-    return await db.users.create({ data: user })
-  }
-}
+// components/ — a typed prop is the guarantee
+function RecipeList({ recipes }: { recipes: TRecipe[] }) { … }
 ```
 
-**When you might validate at multiple layers:**
+### The legitimate case: two schemas, two shapes
 
-```typescript
-// Different schemas for different layers
-const apiUserSchema = z.object({
-  email: z.string().email(),
-  password: z.string().min(8),  // Only in API layer
-})
+Validating twice is right when the **shapes genuinely differ** — which in this app means the API
+shape and the domain shape, and the adapter between them:
 
-const dbUserSchema = z.object({
-  id: z.string().uuid(),
-  email: z.string().email(),
-  passwordHash: z.string(),  // Transformed before storage
-})
+```ts
+export const userSchema = z.object({            // what the API sends
+    email_verified_at: z.string().nullable(),
+    created_at: z.string(),
+});
 
-// API validates input format
-export async function POST(req: NextRequest) {
-  const input = apiUserSchema.parse(await req.json())
-  const user = await userService.create(input)
-  return NextResponse.json(user)
-}
-
-// Service transforms and validates for storage
-const userService = {
-  async create(input: z.infer<typeof apiUserSchema>) {
-    const dbUser = dbUserSchema.parse({
-      id: crypto.randomUUID(),
-      email: input.email,
-      passwordHash: await hash(input.password),
-    })
-    return await userRepository.insert(dbUser)
-  }
-}
+export const userResourceSchema = z.object({    // what the app works with
+    emailVerifiedAt: z.date().nullable(),
+    createdAt: z.date(),
+});
 ```
 
-**When NOT to use this pattern:**
-- When schemas differ between layers (API vs DB shape)
-- When data crosses trust boundaries (external service response)
-- During development when debugging data flow
+`userSchema` parses the response; `userAdapter` converts; `userResourceSchema` exists to derive
+`TUser` and to be asserted against in the adapter's own test. That is not double validation of the
+same data — it is one check per distinct contract.
 
-Reference: [Zod Performance](https://zod.dev/v4#performance)
+**Rules:**
+
+- One parse per inbound boundary, in `data/`.
+- Hooks and components take typed props and domain types, never `unknown`.
+- A schema in a component is a sign the boundary is in the wrong place.
+- Two schemas are right when there are two shapes; they are wrong as a belt-and-braces re-check
+  of one shape.
+
+Reference: [Zod performance](https://zod.dev/v4#performance)

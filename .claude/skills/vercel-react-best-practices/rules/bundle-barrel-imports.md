@@ -1,60 +1,62 @@
 ---
 title: Avoid Barrel File Imports
 impact: CRITICAL
-impactDescription: 200-800ms import cost, slow builds
-tags: bundle, imports, tree-shaking, barrel-files, performance
+impactDescription: slow dev server, larger chunks
+tags: bundle, imports, tree-shaking, barrel-files, vite
 ---
 
 ## Avoid Barrel File Imports
 
-Import directly from source files instead of barrel files to avoid loading thousands of unused modules. **Barrel files** are entry points that re-export multiple modules (e.g., `index.js` that does `export * from './module'`).
+A **barrel file** is an entry point that re-exports other modules (`index.ts` doing
+`export * from './thing'`). Importing one named thing from a barrel can pull the whole module
+graph behind it into the dev server's work and, when side effects defeat tree-shaking, into the
+production chunk.
 
-Popular icon and component libraries can have **up to 10,000 re-exports** in their entry file. For many React packages, **it takes 200-800ms just to import them**, affecting both development speed and production cold starts.
+Icon and component libraries are the worst offenders — some have thousands of re-exports in their
+entry file.
 
-**Why tree-shaking doesn't help:** When a library is marked as external (not bundled), the bundler can't optimize it. If you bundle it to enable tree-shaking, builds become substantially slower analyzing the entire module graph.
+### In this project
 
-**Incorrect (imports entire library):**
-
-```tsx
-import { Check, X, Menu } from 'lucide-react'
-// Loads 1,583 modules, takes ~2.8s extra in dev
-// Runtime cost: 200-800ms on every cold start
-
-import { Button, TextField } from '@mui/material'
-// Loads 2,225 modules, takes ~4.2s extra in dev
-```
-
-**Correct - Next.js 13.5+ (recommended):**
-
-```js
-// next.config.js - automatically optimizes barrel imports at build time
-module.exports = {
-  experimental: {
-    optimizePackageImports: ['lucide-react', '@mui/material']
-  }
-}
-```
+Vite pre-bundles dependencies with esbuild (`optimizeDeps`), so the dev-server cost of
+`import { Martini } from 'lucide-react'` is paid once per cold start rather than per request, and
+the production Rollup build tree-shakes `lucide-react`'s ESM properly. **So keep writing the
+normal named import** — it is correct here:
 
 ```tsx
-// Keep the standard imports - Next.js transforms them to direct imports
-import { Check, X, Menu } from 'lucide-react'
-// Full TypeScript support, no manual path wrangling
+import { Martini, ShoppingCart } from 'lucide-react'
 ```
 
-This is the recommended approach because it preserves TypeScript type safety and editor autocompletion while still eliminating the barrel import cost.
-
-**Correct - Direct imports (non-Next.js projects):**
+**Do not deep-import to "optimize" it:**
 
 ```tsx
-import Button from '@mui/material/Button'
-import TextField from '@mui/material/TextField'
-// Loads only what you use
+import Martini from 'lucide-react/dist/esm/icons/martini'   // ✗
 ```
 
-> **TypeScript warning:** Some libraries (notably `lucide-react`) don't ship `.d.ts` files for their deep import paths. Importing from `lucide-react/dist/esm/icons/check` resolves to an implicit `any` type, causing errors under `strict` or `noImplicitAny`. Prefer `optimizePackageImports` when available, or verify the library exports types for its subpaths before using direct imports.
+`lucide-react` does not ship `.d.ts` files for those subpaths, so under `strict` this resolves to
+an implicit `any` — you would be trading a type error for a bundle micro-win that Rollup already
+handles.
 
-These optimizations provide 15-70% faster dev boot, 28% faster builds, 40% faster cold starts, and significantly faster HMR.
+### The actionable rule: don't write your own barrels
 
-Libraries commonly affected: `lucide-react`, `@mui/material`, `@mui/icons-material`, `@tabler/icons-react`, `react-icons`, `@headlessui/react`, `@radix-ui/react-*`, `lodash`, `ramda`, `date-fns`, `rxjs`, `react-use`.
+The real risk in this codebase is adding `index.ts` re-export files inside `src/`:
 
-Reference: [How we optimized package imports in Next.js](https://vercel.com/blog/how-we-optimized-package-imports-in-next-js)
+```ts
+// src/context.bar/components/index.ts     ✗ don't create this
+export * from './bar-view'
+export * from './bar-actions'
+```
+
+```tsx
+import { BarView } from '@/context.bar/components'          // ✗
+import { BarView } from '@/context.bar/components/bar-view'  // ✓
+```
+
+Importing one component then drags in every sibling — and every hook, schema and provider *they*
+import — which defeats route-level code splitting, since two routes that each need one component
+from the barrel now share everything in it. Import the file you mean. It is also the import the
+reader can follow.
+
+Libraries commonly affected: `lucide-react`, `@mui/material`, `@tabler/icons-react`,
+`react-icons`, `lodash`, `date-fns`, `rxjs`.
+
+Reference: [Vite dep pre-bundling](https://vite.dev/guide/dep-pre-bundling.html)

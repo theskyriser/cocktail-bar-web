@@ -1,120 +1,83 @@
 ---
 title: Validate at System Boundaries
 impact: CRITICAL
-impactDescription: Validating deep in business logic allows corrupt data to propagate; validating at boundaries catches issues before they spread
+impactDescription: validating deep in the UI lets corrupt data propagate; validating at the boundary catches it before it spreads
 tags: parse, boundaries, architecture, defense-in-depth
 ---
 
 ## Validate at System Boundaries
 
-Validate external data immediately when it enters your system—at API endpoints, form handlers, message queue consumers, and configuration loaders. Validating deep in business logic allows corrupt data to propagate and makes debugging harder.
+Validate external data the moment it enters the app. In this SPA there is exactly one inbound
+boundary worth guarding — **the API response** — plus two smaller ones: browser storage and URL
+search params.
 
-**Incorrect (validating deep in business logic):**
+The boundary is the `data/` layer. Everything above it (hooks, components) must be able to assume
+the data is already the right shape.
 
-```typescript
-import { z } from 'zod'
+**Incorrect (unvalidated data flows into the UI):**
 
-// No validation at API boundary
-export async function POST(req: NextRequest) {
-  const body = await req.json()
-  // Raw unknown data passed through
-  return await processOrder(body)
-}
+```ts
+// context.bar/data/getBarMatches.ts
+export async function getBarMatches(barId: number) {
+    const response = await fetch(`/api/bars/${barId}/matches`)
 
-async function processOrder(data: unknown) {
-  // Data passed around unvalidated
-  const items = await calculateTotals(data)
-  return await chargeCustomer(data, items)
-}
-
-async function calculateTotals(data: unknown) {
-  // Finally validating way too late
-  const order = orderSchema.parse(data)  // Throws here, far from entry point
-  // ...
-}
-// Hard to trace where bad data came from
-```
-
-**Correct (validating at boundary):**
-
-```typescript
-import { z } from 'zod'
-
-const orderSchema = z.object({
-  customerId: z.string().uuid(),
-  items: z.array(z.object({
-    productId: z.string(),
-    quantity: z.number().int().positive(),
-  })).min(1),
-  shippingAddress: z.object({
-    street: z.string(),
-    city: z.string(),
-    country: z.string(),
-  }),
-})
-
-type Order = z.infer<typeof orderSchema>
-
-// Validate immediately at boundary
-export async function POST(req: NextRequest) {
-  const body = await req.json()
-
-  const result = orderSchema.safeParse(body)
-  if (!result.success) {
-    return NextResponse.json(
-      { error: 'Invalid order', issues: result.error.issues },
-      { status: 400 }
-    )
-  }
-
-  // Now data is validated and typed
-  return await processOrder(result.data)
-}
-
-// Business logic receives typed, validated data
-async function processOrder(order: Order) {
-  // order is guaranteed to match schema
-  const items = await calculateTotals(order)
-  return await chargeCustomer(order, items)
-}
-
-async function calculateTotals(order: Order) {
-  // No validation needed - type guarantees shape
-  return order.items.map(item => ({
-    ...item,
-    total: item.quantity * getPrice(item.productId),
-  }))
+    return (await response.json()) as TBarMatches   // ✗ a cast is not a check
 }
 ```
 
-**Boundaries to validate:**
+A cast tells TypeScript to stop asking. At runtime the object is whatever the server sent, so a
+renamed field surfaces as `undefined` three layers up — in a component, with no indication that
+the API changed.
 
-```typescript
-// API endpoints
-export async function POST(req: NextRequest) {
-  const data = await req.json()
-  const validated = requestSchema.safeParse(data)
-  // ...
+**Correct (validated at the boundary, typed above it):**
+
+```ts
+// context.bar/data/getBarMatches.ts
+export async function getBarMatches(opts: {
+    data: { barId: number };
+    signal?: AbortSignal;
+}): Promise<TBarMatches> {
+    const response = await fetchApi(API_ENDPOINTS.barMatches(opts.data.barId), {
+        schema: barMatchesSchema,       // parsed here, once
+        signal: opts.signal,
+    });
+
+    return barMatchesAdapter(response);
 }
-
-// Message queue consumers
-async function handleMessage(rawMessage: string) {
-  const data = JSON.parse(rawMessage)
-  const validated = messageSchema.safeParse(data)
-  // ...
-}
-
-// Configuration loading
-const config = configSchema.parse(JSON.parse(process.env.CONFIG!))
-
-// External API responses
-const response = await fetch('/api/users')
-const data = await response.json()
-const users = usersResponseSchema.parse(data)
 ```
 
-**When NOT to use this pattern:**
-- Internal function calls with already-validated data
-- Performance-critical hot paths (validate once, trust afterward)
+```ts
+// the hook and every component above it receive TBarMatches, guaranteed
+export function useBarMatches(barId: number) {
+    const { data, isPending } = useQuery({ … });
+    return { matches: data?.matches ?? [], isLoadingMatches: isPending };
+}
+```
 
-Reference: [Zod with TypeScript for Server-side Validation](https://stack.convex.dev/typescript-zod-function-validation)
+If the API drops a field, the `parse` throws, TanStack Query surfaces an error state, and the
+failure points at the boundary where the contract broke — not at the component that happened to
+read the missing key.
+
+**The boundaries in this app:**
+
+```ts
+// 1. API responses — always, via fetchApi's schema. The main one.
+await fetchApi(path, { schema: recipeSchema })
+
+// 2. Browser storage — stale or hand-edited; safeParse with a fallback
+const result = filtersSchema.safeParse(JSON.parse(localStorage.getItem('filters') ?? 'null'))
+
+// 3. URL search params — user-editable by definition
+const page = pageParamSchema.safeParse(searchParams.get('page'))
+```
+
+**Where NOT to validate:**
+
+- In a hook or component that received data from the data layer — it is already parsed, and
+  re-parsing is the double-validation anti-pattern (see
+  [parse-avoid-double-validation.md](parse-avoid-double-validation.md)).
+- Form input — `zodResolver(schema)` is already the boundary for that path.
+- Between two pure functions in `_domain/`. Types are the guarantee there; a runtime check means
+  you do not believe your own boundary.
+
+Reference: [Zod API — parse](https://zod.dev/api#parse)

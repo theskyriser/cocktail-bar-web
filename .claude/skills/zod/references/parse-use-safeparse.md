@@ -1,102 +1,76 @@
 ---
-title: Use safeParse() for User Input
+title: Choose parse() or safeParse() by Who Handles the Failure
 impact: CRITICAL
-impactDescription: parse() throws exceptions on invalid data; unhandled exceptions crash servers and expose stack traces to users
+impactDescription: an uncaught ZodError is a blank screen; a swallowed one is silent bad data
 tags: parse, safeParse, error-handling, validation
 ---
 
-## Use safeParse() for User Input
+## Choose parse() or safeParse() by Who Handles the Failure
 
-`parse()` throws a `ZodError` when validation fails, which crashes your application if not caught. `safeParse()` returns a result object that you can inspect without try/catch. Use `safeParse()` for any user-provided or external data.
+`parse()` throws a `ZodError`. `safeParse()` returns `{ success, data | error }`. Neither is
+universally right — the question is **who is going to handle the failure**.
 
-**Incorrect (parse without error handling):**
+- Something upstream already turns a thrown error into UI → **`parse()`**
+- You need to branch locally, right here → **`safeParse()`**
 
-```typescript
-import { z } from 'zod'
-import { NextRequest, NextResponse } from 'next/server'
+### `parse()` is correct at the fetch boundary
 
-const createUserSchema = z.object({
-  email: z.string().email(),
-  name: z.string().min(1),
-})
+`fetchApi` uses `schema.parse(payload)` deliberately:
 
-export async function POST(req: NextRequest) {
-  const body = await req.json()
+```ts
+// src/common/lib/api/client.ts
+if (!schema) return null
 
-  // If validation fails, this throws and crashes the handler
-  const user = createUserSchema.parse(body)
-
-  // Never reached if parse throws
-  await db.users.create({ data: user })
-  return NextResponse.json({ success: true })
-}
-// Result: 500 Internal Server Error with stack trace
+return schema.parse(payload)
 ```
 
-**Correct (using safeParse):**
+The throw is not unhandled — TanStack Query catches it and surfaces it as `error`, so a response
+that does not match its schema becomes a visible error state instead of malformed data flowing
+into components. Returning a `safeParse` result here would force every provider, hook and
+component to re-check `success`, and the first one to forget would render `undefined`.
 
-```typescript
-import { z } from 'zod'
-import { NextRequest, NextResponse } from 'next/server'
+**A schema mismatch should be loud.** It means the API changed and this app has not caught up.
 
-const createUserSchema = z.object({
-  email: z.string().email(),
-  name: z.string().min(1),
-})
+### `safeParse()` is correct when you branch locally
 
-export async function POST(req: NextRequest) {
-  const body = await req.json()
+```ts
+const stored = localStorage.getItem('filters')
+const result = filtersSchema.safeParse(stored ? JSON.parse(stored) : null)
 
-  const result = createUserSchema.safeParse(body)
-
-  if (!result.success) {
-    // Return structured error response
-    return NextResponse.json(
-      { error: 'Validation failed', issues: result.error.issues },
-      { status: 400 }
-    )
-  }
-
-  // result.data is typed correctly
-  await db.users.create({ data: result.data })
-  return NextResponse.json({ success: true })
-}
+const filters = result.success ? result.data : defaultFilters
 ```
 
-**The result object structure:**
+Browser storage is untrusted and recoverable: it can be stale from an older release, edited by
+hand, or absent. There is no sensible error screen for "your saved filters were from last month",
+so fall back to a default and move on.
 
-```typescript
-// Success case
+**The result object:**
+
+```ts
+// success
 { success: true, data: T }
 
-// Error case
+// failure
 { success: false, error: ZodError }
 
-// Type narrowing works automatically
+// narrowing works automatically
 if (result.success) {
-  result.data  // T - fully typed
+    result.data          // T, fully typed
 } else {
-  result.error  // ZodError
-  result.error.issues  // Array of validation issues
+    result.error.issues  // the validation issues
 }
 ```
 
-**When parse() is acceptable:**
+### Rules
 
-```typescript
-// Internal data you control - parse is fine
-const config = configSchema.parse(JSON.parse(process.env.CONFIG))
+- **`parse()`** inside `fetchApi`, and in tests where a throw is the assertion.
+- **`safeParse()`** for `localStorage`, `sessionStorage`, URL search params, a pasted value, or
+  anything with a usable fallback.
+- **Never `try/catch` a `safeParse`** — it does not throw, and the `catch` will quietly hide a
+  real bug elsewhere in the block.
+- **Never swallow a failure to carry on with partial data.** Either you have a real fallback, or
+  the failure belongs upstream.
+- Form input does not need either: `zodResolver(schema)` runs the schema for you and puts the
+  issues on the fields.
 
-// Test assertions - parse throws helpful errors
-expect(() => schema.parse(invalidData)).toThrow()
-
-// Schema development - see errors immediately
-schema.parse(testData)  // See what fails during development
-```
-
-**When NOT to use this pattern:**
-- Internal configuration parsing where invalid data should crash early
-- Tests where you want exceptions to fail the test
-- Scripts where you want to see the full error
-
-Reference: [Zod API - safeParse](https://zod.dev/api#safeparse)
+Reference: [Zod API — safeParse](https://zod.dev/api#safeparse)

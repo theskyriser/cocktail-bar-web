@@ -1,393 +1,277 @@
 ---
 paths:
+  - "**/src/main.tsx"
   - "**/src/app/**"
-  - "**/src/middleware.ts"
   - "**/src/common/**"
 ---
 
-# App Structure (above the domain modules)
+# App Structure (the shell above the contexts)
 
-How a Next.js **App Router** frontend is assembled *above* the `context.<domain>/`
-folders: routing, layouts, auth, data loading and the shared `common/` layer. The
-rules *inside* a domain module are in [layered-architecture.md](layered-architecture.md);
-component and hook conventions are in [coding-standards.md](coding-standards.md).
+How this SPA is assembled *above* the `context.<domain>/` folders: the entry point, the router,
+the route guards, the providers and the shared `common/` layer. The rules *inside* a context are
+in [layered-architecture.md](layered-architecture.md); component and hook conventions are in
+[coding-standards.md](coding-standards.md).
 
-> **This is a shape, not a spec.** It describes an arrangement that works, and —
-> more importantly — *why each part is where it is*. Read the project's own
-> `app/`, `middleware.ts` and `common/constants*.ts` before applying anything
-> here; where they differ, they win. When you adopt this document into a repo,
-> pin it to a commit (`written against origin/main @ <sha> (<date>)`) so a later
-> reader can tell how stale it is.
+> **This describes `cocktail-bar-web` as it actually is**, not a generic shape. Read
+> `src/main.tsx`, `src/app/router.tsx` and `src/app/providers.tsx` before changing anything here;
+> where they differ from this document, they win.
 
-**Placeholders used below:** `<web-app>` the frontend repo · `<api>` the backend
-API · `context.<domain>` a bounded context · `(shell)` the route group carrying
-the heavy persistent chrome · `(standalone)` a section that needs its own frame ·
-`[tenant_id]` whatever the per-account route param is (partner, org, workspace,
-account) · `TENANT_ROUTES` / `INTERNAL_ROUTES` the role-family allow-lists.
+**There is no server.** No SSR, no server components, no route handlers, no edge middleware, no
+BFF. `vp build` emits a static `dist/` that a CDN serves, and the browser talks straight to
+`cocktail-bar-api`. Every "put this on the server" instinct from a meta-framework becomes, here,
+either *an API endpoint in the other repo* or *nothing at all*.
 
 ---
 
-## 1. Stack at a glance
-
-Record the actual choices per repo — the point of the table is that the answers
-are written down somewhere, not that they match these defaults.
-
-| Concern | Typical choice in this pattern |
-|---|---|
-| Framework | Next.js App Router **only** (no `pages/`), React 19, TypeScript strict |
-| Dev server | `next dev --turbopack` on :3000 |
-| Build | `output: 'standalone'`, container image, CI pipeline config in-repo |
-| Server state | TanStack Query v5, optionally persisted to browser storage via `PersistQueryClientProvider` |
-| Client state | Small Zustand stores (`src/common/store`, plus per-domain `store/`) |
-| Validation | A zod schema on **every** fetcher (`fetchApi({ schema: { data } })`) |
-| UI | Tailwind + a headless primitive library (Radix et al.), local fonts |
-| Observability | An error reporter wired for client, server **and** edge runtimes, tunnelled through a first-party path so ad blockers do not eat it |
-| Tests | Jest `*.test.tsx` beside the code; E2E suite in `e2e/` — **state plainly whether it runs in CI** |
-
-Path aliases (`tsconfig.json`): `@/*` to `src/*`, `@@/*` to the repo root. Keep
-the set small; every alias is another thing the bundler and the test runner must
-agree on (see the mock-path rule in [layered-architecture.md](layered-architecture.md) §9).
-
----
-
-## 2. Top-level layout of `src/`
+## 1. Top-level layout of `src/`
 
 ```
 src/
-├── middleware.ts          # Edge middleware: auth, role routing, CSP nonce
-├── instrumentation.ts     # Server/edge observability init, runtime polyfills
-├── app/                   # App Router: routes, layouts, boundaries ONLY (thin)
-├── common/                # Cross-domain shell: components, hooks, data, utils, constants
-└── context.<domain>/      # Bounded contexts (one folder per context)
+├── main.tsx                  # entry: the only ReactDOM render
+├── app/                      # the routing shell — thin, no domain logic
+│   ├── router.tsx            # route objects
+│   ├── routes.ts             # ROUTES: the ONLY place a path string is written
+│   ├── providers.tsx         # QueryClientProvider, TooltipProvider, Toaster
+│   ├── guards/               # RequireAuth, GuestOnly
+│   └── pages/                # one file per route; composes a layout + context components
+├── common/                   # shared across every context (see §6)
+└── context.<domain>/         # bounded contexts, one folder per context
 ```
 
-Repo-root files that belong to the shell rather than to any domain:
-`next.config.js`, the client-side observability init, the error-reporter configs,
-`tailwind.config.ts`, any CSS-variable build step, a bundle-size budget file,
-dead-code config (e.g. `knip.jsonc`), and `patches/` if the project patches
-dependencies.
+Path alias: `@/*` → `src/*`. Keep the alias set at exactly one; every extra alias is another
+thing the bundler and Vitest must agree on (see the mock-path rule in
+[layered-architecture.md](layered-architecture.md) §9).
 
-### The split between `app/` and domains
+### The split between `app/` and the contexts
 
-**`app/` is thin.** A route's `page.tsx` imports a page component from the owning
-domain and renders it; its `layout.tsx` sets up chrome and server prefetches.
-Nothing else:
+**`app/` is thin.** A page imports components from the owning context and arranges them in a
+layout. Nothing else — no fetching, no business rules, no schemas:
 
 ```tsx
-// app/(dashboard)/dashboard/page.tsx
-export default function Dashboard() { return <DashboardPage /> }   // from context.dashboard
+// src/app/pages/auth/login.tsx — the shape every page follows
+export default function Login() {
+    return (
+        <AuthLayout title="Log in" description="…">
+            <LoginForm />      {/* from context.auth */}
+        </AuthLayout>
+    );
+}
 ```
 
-This keeps routing (a framework concern) separate from the domain modules, so a
-domain can be tested, moved or renamed without touching the route tree.
-
-**The sanctioned exception** is a section large enough to own its whole stack. It
-may live entirely under its route folder with colocated private layers:
-
-```
-app/(standalone)/…/<section>/
-  _components/ _data/ _domain/ _hooks/ _store/ _utils/ _constants/
-```
-
-`_`-prefixed folders are private to Next, so they are not routes. Note the cost
-before choosing this: the shared layer ends up importing *into* `app/` (for
-example `common/constants.prefetch.provider.ts` registering that section's
-fetchers), which is a dependency pointing the wrong way. Take it deliberately,
-for one or two sections at most, and write down that you did.
+This keeps routing — a framework concern — separate from the contexts, so a context can be
+tested, moved or renamed without touching the route tree. Pages are the **only** place a
+`default export` is correct, because `React.lazy` requires one.
 
 ---
 
-## 3. Route map
+## 2. Entry point (`src/main.tsx`)
 
-Route groups `( … )` organise layouts without changing the URL. A representative
-tree:
+Order is load-bearing, outside → in:
 
 ```
-app/
-├── layout.tsx                    # Root shell (providers — see §5)
-├── error.tsx                     # → shared page error boundary fallback
-├── global-error.tsx              # Last-resort boundary (own <html>), logs via the shared logger
-├── not-found.tsx                 # 404 → link back to /login
-├── _styles/                      # globals.css, generated CSS vars, Tailwind theme extension
-│
-├── login/                        # Auth layout (owned by context.user)
-│   ├── page.tsx                  #   /login
-│   ├── forgotten-password/ · reset-password/
-│   ├── <sso>-callback/           #   identity-provider return
-│   └── invitation/… · welcome/
-├── register/ · verify-email/ · privacy-policy/ · maintenance/
-│
-├── (shell)/                      # The heavy, persistent section
-│   ├── loading.tsx               #   COLD-load skeleton (see §6)
-│   └── tenant/
-│       ├── layout.tsx            #   section-wide toasts + full-height frame
-│       └── [tenant_id]/
-│           ├── layout.tsx        #   THE SHELL: nav, persistent panels, heavy widgets (§6)
-│           ├── loading.tsx       #   renders null, so in-shell navigation keeps the shell
-│           ├── page.tsx          #   search-param-driven panels
-│           └── <feature>/ …      #   routed sub-pages
-│
-├── (standalone)/                 # SAME URL prefix, SEPARATE layout tree (no shell)
-│   └── tenant/[tenant_id]/<section>/ …
-│
-├── (dashboard)/dashboard/        # Its own nav bar
-│
-├── internal/                     # Staff-only area, its own nav
-│   └── … (+ nested sections)
-│
-└── api/
-    ├── health/route.ts           # GET/HEAD → {status:'healthy'}, unauthenticated
-    └── internal/health/route.ts  # Bearer-token gated; 404 when the token env var is unset
+StrictMode
+  Providers                    # QueryClientProvider > TooltipProvider > children + Toaster
+    Suspense fallback={Spinner}  # catches every lazy() route chunk
+      RouterProvider
 ```
 
-Points worth knowing — each of these has bitten someone:
+then `initializeTheme()` after the render call, and `@/common/styles/app.css` imported here —
+this is the one module that pulls in the stylesheet.
 
-- **There may be no `/` page.** If the middleware matches `/`, signed-out users
-  go to `/login` and signed-in users fail the role check and are sent to their
-  role home page. Nothing ever renders at `/`. Do not add a page there expecting
-  it to show.
-- **A shared URL prefix is not a shared layout.** `(standalone)` can sit under
-  the same `/tenant/[tenant_id]/…` path while living in a different route group,
-  so the shell layout does **not** wrap it. Moving between the two swaps the
-  entire layout — which is the point when the section needs the full viewport,
-  and a surprise when you did not intend it.
-- **Much of a shell section's UI may not be routed at all.** Panels opened by
-  search params (`?customer_panel=…`, `?detail_panel=…`) are read by a panel
-  component, not by a path segment. Deep links to them are query strings, so
-  they do not appear in the route tree and do not get their own `loading.tsx`.
-- **Server API routes stay minimal.** Health checks and nothing else. Every
-  other call goes from the browser or a server component straight to `<api>` —
-  there is no BFF layer. Adding one is an architectural decision, not a
-  convenience.
+Consequences worth knowing before changing any of it:
+
+- **`Suspense` sits above the router, so it is app-wide.** Every lazy route shares one fallback.
+  If you want a route to show skeleton UI shaped like its own content instead of a centred
+  spinner, add a nearer `Suspense` inside that page — do not move this one.
+- **`StrictMode` double-invokes renders, effects and `useState` initialisers in development.** A
+  component that breaks only in dev is usually one that mutates during render or runs a
+  non-idempotent effect. That is the bug being surfaced, not a reason to remove StrictMode.
+- **`initializeTheme()` runs outside React** because the theme must be on `<html>` before first
+  paint. Do not move it into a component or an effect; that reintroduces a flash of the wrong
+  theme.
 
 ---
 
-## 4. Middleware: auth, role routing, CSP
+## 3. The router (`src/app/router.tsx`)
 
-`src/middleware.ts` should be a one-line re-export of the auth middleware owned
-by `context.user` — the logic belongs to that context, the file placement is a
-framework requirement. The `matcher` covers `/`, the public pages and every
-protected prefix. On each matched request:
+`createBrowserRouter` with a flat array of route objects. Three things make it work:
 
-1. **Mint a CSP nonce.** Set it on the request (`x-nonce`) and set
-   `Content-Security-Policy` (plus report-only and reporting endpoints where
-   configured) and `Referrer-Policy: no-referrer` on the response. The root
-   layout reads the nonce back out of the request headers.
-2. **Handle force logout** — a `?force_logout` on the login route clears every
-   auth cookie.
-3. **Decide authentication** — require *both* a verified claims cookie (signed,
-   verified in the middleware) *and* a session cookie. Either one alone is not a
-   session.
-4. **Unauthenticated + protected route** → redirect to `/login?return_url=…`,
-   clearing an orphaned session cookie on the way.
-5. **Authenticated** users are redirected to their role home page when any of:
-   the route is public-only (e.g. `/login` while signed in); the role's route
-   allow-list does not match; a finer permission rule fails.
+```tsx
+const Dashboard = lazy(() => import('@/app/pages/dashboard'));   // every page…
+import Welcome from '@/app/pages/welcome';                       // …except the first paint
+```
 
-### Route allow-lists (`common/constants.ts`)
+- **Every page is `lazy()` except `Welcome`.** Code-splitting per route is the main bundle win in
+  an SPA; the landing page is eager because splitting the very first thing a visitor sees only
+  adds a round trip.
+- **Guards are pathless layout routes**, not per-page checks:
 
-Access is an **explicit allow-list per role family**. A route that is not in a
-list cannot be reached — so **a new page must be added to the right list or the
-middleware bounces it.** This is the single most common cause of "my new page
-redirects to the dashboard".
+```tsx
+{ element: <GuestOnly />,                 children: [ login, register, … ] },
+{ element: <RequireAuth />,               children: [ verifyEmail, settings.profile ] },
+{ element: <RequireAuth requireVerified />, children: [ dashboard, settings.security, … ] },
+```
 
-| List | Who | Contents |
+  A route object with no `path` contributes no URL segment — it just wraps its children in an
+  element that renders `<Outlet />` or redirects. So the policy is written **once per tier**
+  instead of once per page, and adding a page to the wrong tier is the whole of the mistake you
+  can make.
+- **`{ path: '*' }` last** catches everything unmatched → `NotFound`.
+
+### The three tiers, and the trap between them
+
+| Tier | Who gets in | Holds |
 |---|---|---|
-| `UNPROTECTED_ROUTES` | anyone, signed-out only | login and its sub-flows, privacy policy, maintenance, register, email verification |
-| `TENANT_ROUTES` | tenant-facing roles | `/tenant/:id` and its sub-pages, standalone-section routes, post-login landing, the public pages, dashboard |
-| `INTERNAL_ROUTES` | staff roles | every `/internal/*` page **plus all of `TENANT_ROUTES`** — staff can enter any tenant |
+| ungated | anyone | `home`, and the `*` fallback |
+| `GuestOnly` | signed-out only | login, register, forgot-password, reset-password |
+| `RequireAuth` | signed in, **verified or not** | `verify-email`, `settings.profile` |
+| `RequireAuth requireVerified` | signed in **and** verified | dashboard, settings security + appearance |
 
-Matching is **by segment**: `:param` matches any non-empty segment and the
-segment *count* must be equal. So `/tenant/:id/flags/:id` must be listed
-separately from `/tenant/:id/flags` — a parent entry does not cover its children.
+**`verify-email` must sit in the unverified tier.** Put it behind `requireVerified` and an
+unverified user is redirected to `verify-email`, which redirects them to `verify-email`, forever.
+The same reasoning puts `settings.profile` there: changing your email address is exactly what an
+unverified user may need to do. This is the one ordering decision in the file that fails as an
+infinite loop rather than as a wrong page.
 
-Each role family also needs a home page (`getRoleBasedRoutes`): tenant roles to
-`/tenant/{defaultTenantId}`, staff to `/internal`.
+### Adding a page: checklist
 
-### Finer rules (`context.user/utils/checkRouteAccessPermission.ts`)
+1. Add the path to `ROUTES` in `src/app/routes.ts`. If it takes a param, add a helper beside it
+   that interpolates — `resetPasswordUrl(token)` is the pattern; never build the string at a call
+   site.
+2. Create `src/app/pages/<area>/<name>.tsx` with a **`default export`**, keeping it thin: a
+   layout plus components from the owning context.
+3. Register it in `src/app/router.tsx` as `lazy()`, inside the correct guard tier.
+4. Decide the tier deliberately — ungated, guest-only, authenticated, or authenticated **and**
+   verified — and say which in the PR.
+5. `npm run ci:check`, then click the route both cold (full reload on that URL) and warm
+   (in-app navigation). Cold load exercises the guard's loading branch and the lazy chunk;
+   warm navigation does not.
 
-A route allow-list is coarse. Per-permission rules go in an **ordered list**
-matched by path substring *or by search-param substring*, resolved with
-`find()` — so **order matters**, and a broad entry placed first will shadow a
-narrower one below it.
+---
 
-| Match | Requires |
+## 4. Guards (`src/app/guards/`)
+
+A guard is a component that reads auth state and returns one of three things: a loading state, a
+`<Navigate>`, or `<Outlet />`. `RequireAuth` is the worked example:
+
+```tsx
+if (isLoadingUser) return <Spinner … />;                                  // 1. don't decide yet
+if (!isAuthenticated) return <Navigate to={ROUTES.login} replace
+                                       state={{ from: location }} />;     // 2. bounce
+if (requireVerified && authConfig.mustVerifyEmail && !isVerified)
+    return <Navigate to={ROUTES.verifyEmail} replace />;                  // 3. bounce further
+return <Outlet />;                                                        // 4. let them through
+```
+
+Each line earns its place:
+
+- **The loading branch is not optional.** `useAuth` starts out `isPending`, so without it the
+  guard would read `isAuthenticated === false` on first render and bounce a signed-in user to the
+  login screen before their session had been checked.
+- **`replace`** keeps the bounced URL out of history, so Back does not land the user on the page
+  they were just refused.
+- **`state={{ from: location }}`** carries the intended destination so a post-login redirect can
+  honour it.
+- **`authConfig.mustVerifyEmail`** is read from the API, not hardcoded. Whether verification is
+  enforced is the server's decision; the client asks.
+
+Guards are the **only** place a route-level auth decision is made. A component that re-checks
+`isAuthenticated` to decide whether to render is duplicating a decision already made above it —
+by the time it renders, the guard has let it through.
+
+---
+
+## 5. Providers (`src/app/providers.tsx`)
+
+```tsx
+const [queryClient] = useState(createQueryClient);   // note: the function, not a call
+```
+
+- **The query client is created once, in `useState`** — not at module scope. A module-level
+  singleton is shared between tests in the same process, so cached data leaks from one test into
+  the next; creating it inside the component gives each mount (and each test) a clean cache.
+  Passing `createQueryClient` *as a reference* rather than calling it means React does not
+  construct a throwaway client on every render.
+- **Defaults live in `createQueryClient`** (`src/common/lib/api/query-client.ts`), not sprinkled
+  per `useQuery`: `staleTime: 30s`, no refetch on window focus, and **no retry below HTTP 500**.
+  Retrying a 422 or a 404 just delays the error the user needs to see; a 500 might be transient.
+  Mutations never retry — replaying a non-idempotent write is worse than failing.
+- Add a provider here only when the whole app needs it. A context used by one page belongs in
+  that page.
+
+---
+
+## 6. `src/common/` — the shared layer
+
+| Folder | Holds |
 |---|---|
-| search param `"tab":"REPORT"` | a `VIEW_REPORTS` permission |
-| `/flags` | a specific manager role |
-| `/internal/<staff-only-section>` | any internal role |
-| `/<shared-section>` | tenant-owner **or** internal role |
+| `components/` | App shell and shared pieces: `app-shell`, `app-header`, `app-sidebar`, `app-content`, `nav-main`, `nav-footer`, `breadcrumbs`, `heading`, `input-error`, `alert-error`, `password-input`, `text-link`, `user-info` |
+| `components/ui/` | **Vendored shadcn primitives** (31 of them). Excluded from lint/format on purpose — treat as generated |
+| `hooks/` | `use-appearance` (theme), `use-mobile`, `use-mobile-navigation`, `use-current-url`, `use-document-title`, `use-initials`, `use-clipboard` |
+| `layouts/` | `app-layout`, `app/app-sidebar-layout`, `app/app-header-layout`, `auth-layout`, `auth/auth-simple-layout`, `settings/layout` |
+| `lib/api/` | `client.ts` (**the single fetch choke point**), `endpoints.ts`, `errors.ts`, `form-errors.ts`, `query-client.ts` |
+| `lib/` | `utils.ts` (`cn()`), `app-name.ts` |
+| `styles/app.css` | Tailwind 4 theme + Classical design tokens — the theme is **CSS-first**, there is no `tailwind.config.ts` |
+| `types/` | `navigation.ts`, `ui.ts`, `index.ts`, ambient `global.d.ts` / `vite-env.d.ts` |
 
-### Client-side counterpart
-
-Middleware covers navigation only. API-level auth failures are handled once, in
-the QueryClient (`common/util/getQueryClient.ts`), so no component repeats it:
-
-- **401** → store the return URL, drop cookies, hard-navigate to the forced
-  logout route.
-- **403 with a tenant-access code** → eject to the user's home page, guarding
-  against a redirect loop when they are already on it.
-- **Any other 403** → one de-duplicated toast; the user stays put.
-- Queries or mutations that *expect* a refusal (speculative access probes) opt
-  out through `meta` flags rather than by catching errors locally.
+`common/` is a **shell, not a dumping ground**: something belongs here only when two or more
+contexts use it, or the shell itself does. Anything used by exactly one context belongs in that
+context. There is deliberately no `common/data/` and no `common/store/` — cross-context fetchers
+and global client state have not been needed, and adding either is an architectural decision to
+argue for in a PR, not a convenience.
 
 ---
 
-## 5. Root shell (`app/layout.tsx`)
-
-Provider order, outside → in. The order is load-bearing: each layer depends on
-the one above it.
+## 7. The API edge
 
 ```
-<html> <body fonts>
-  NonceProvider                 # CSP nonce for headless-primitive / devtools styles
-    SearchParamsProvider        # app-wide search-param store (wraps useSearchParams)
-      ClientPageReporter        # sets the client-page header value for API calls
-      ClientViewportReporter    # same for viewport
-      QueryClientProvider       # (Persist)QueryClientProvider + cross-tab sync + tab guards
-        TooltipProvider
-          HydrationBoundary     # root prefetch (current user, streamed)
-            NavigationEvents    # route-change events + error-reporter user context
-            ToastContainer
-            <main><Suspense>{children}</Suspense></main>
-<Script nonce>
+context.<domain>/data/getFoo.ts
+   └─ fetchApi(path, { method, body, schema, signal })      # common/lib/api/client.ts
+        └─ cocktail-bar-api  (cookie session + XSRF header)
 ```
 
-Consequences to understand before changing any of it:
+`fetchApi` is the single choke point, and it owns four things no caller should reimplement:
 
-- **Reading request headers for the nonce makes every route dynamic.** That is
-  precisely what lets `useSearchParams()` return real values during SSR. Turning
-  on PPR, or removing the header read, pushes the app back to client rendering —
-  a performance "win" that silently breaks server-rendered, param-driven UI.
-- **Prefetch the current user once, at the root**, streamed, when a session
-  exists. Every layout below then joins that in-flight request instead of
-  starting its own.
-- The query-client provider is also where cross-cutting cache behaviour mounts:
-  purge the persisted cache when a sibling tab logs out; invalidate or patch
-  queries from realtime events; detect duplicated tabs.
-- **Bust the persisted cache on every deploy** with a build-id env var set from
-  the framework's own build id. A persisted cache that outlives a schema change
-  is a zod throw on the user's next visit.
+1. **CSRF.** Before any unsafe method it ensures the `XSRF-TOKEN` cookie exists, then mirrors it
+   into the `X-XSRF-TOKEN` header. Concurrent callers share one in-flight cookie request.
+2. **The 419 retry.** A stale CSRF token gets the cookie refreshed and the request replayed
+   **once**, then surfaces. This is at the fetch layer, not in TanStack Query's `retry`, because
+   it is a precondition repair rather than a flaky-network retry.
+3. **Error shaping.** `422` → `ValidationError` with `errors`; `401` → `UnauthenticatedError`;
+   anything else → `ApiError` with `status`. Components never branch on a raw status code.
+4. **Parsing.** With a `schema`, the response is `schema.parse(…)`d and the return type is
+   inferred from it. Without one, the call resolves to `null` — which is correct for the API's
+   many `204`s.
 
----
+**`credentials: 'include'` plus cookie auth is why there is no token anywhere in this app.**
+Nothing is read from or written to `localStorage` for auth; the browser holds the session. In
+production the SPA and API must be sibling subdomains of one registrable domain — a deployment
+constraint, not something to patch around in the client.
 
-## 6. Section layouts
+### The one place a 401 is not an error
 
-| Layout | What it adds | Server prefetch |
-|---|---|---|
-| `(shell)/tenant/[tenant_id]/layout.tsx` | The full shell: fullscreen-mode wrapper, navigation progress, the heavy persistent widget (map/canvas/board), the primary list panel, nav bar, menu, help launcher, unsaved-changes guard | **Awaited**: sort/display settings, terms of use, feature flags, first page of the primary list |
-| `(shell)/tenant/[tenant_id]/page.tsx` | The param-driven panels + any required modals | Awaited inside its own Suspense: current user, reference data, filters |
-| `(standalone)/…/layout.tsx` | Card frame, section header, validation indicator, overlay loading, unsaved-changes guard | current user |
-| `internal/layout.tsx` | Backdrop + staff nav | feature flags (streamed) |
-| `(dashboard)/dashboard/layout.tsx` | Lazily-loaded dashboard nav | — |
-| `login/layout.tsx` | Auth layout | — |
+`getUser` catches `UnauthenticatedError` and returns `null`:
 
-**Split the shell deliberately around the Suspense boundary.** Put the heavy
-persistent widget **above** it so it paints on the first flush; put the panels
-that hydrate against awaited data **inside** it. Getting this backwards means
-the whole shell waits on the slowest prefetch.
-
-### Loading boundaries
-
-- **The cold-load skeleton goes in the route group** (`(shell)/loading.tsx`),
-  not in the segment: a `loading.tsx` never wraps the layout in its *own*
-  segment, so one placed beside the shell layout will not cover the shell
-  mounting.
-- **A `loading.tsx` that renders `null`** in the shell segment makes in-shell
-  navigation suspend *inside* the shell rather than replacing it. The trade-off
-  is explicit: a page awaiting data blanks only the content area, and a slow
-  page shows nothing there until it resolves.
-
----
-
-## 7. Data layer (shared, used by every domain)
-
-```
-domain fetcher (context.<domain>/data/getFoo.ts)
-   └─ fetchApi(path, { method, schema: { data: zodSchema }, …cache opts, …prefetch headers })
-        └─ <api> REST (cookie session + XSRF, client-page / viewport headers)
-
-registered in
-   common/constants.data.provider.ts       # reader / writer / pagination maps
-   common/constants.prefetch.provider.ts   # the subset callable from server components
-
-consumed by
-   client:  useData({ provider: 'getFoo' }, args)      # useQuery wrapper; key = createQueryKey(provider, …args)
-            useDataMutation / usePagedData / useInfiniteCursorData / useDataFromCache
-   server:  prefetchQuery({ provider, queryClient }, args)        # awaited
-            streamPrefetchQuery(…)                                # in flight, streamed to the client
-            → <HydrationBoundary state={dehydrateRequest(queryClient)}>
+```ts
+catch (error) {
+    if (isUnauthenticatedError(error)) return null;
+    throw error;
+}
 ```
 
-- **The provider name *is* the query key.** Server prefetch and client `useData`
-  derive the same key from it, so hydration works with no extra wiring — and a
-  hand-rolled key anywhere breaks that silently.
-- `getQueryClient()` returns **one client per server request** (via
-  `React.cache`), shared by every layout and page in that render, and a
-  singleton in the browser.
-- **Server-side queries never retry**, so a dead API cannot stall the document.
-  Errored queries are not dehydrated; the browser refetches them.
-- Use **`prefetchQuery` (awaited)** when the server render reads the data. Use
-  **`streamPrefetchQuery`** only when the server render of that subtree is a
-  loading state anyway (an access gate, a below-the-fold panel).
-- Cache tiers and ETag revalidation live in one constants file
-  (`common/constants.cache.ts`); queries kept fresh by realtime events are
-  listed in another (`common/constants.broadcastQueries.ts`). Both are
-  allow-lists — a query absent from them simply does not get that behaviour.
-- **A response-shape change updates the zod schema in the same body of work.** A
-  mismatch is a runtime throw in front of a user, not a lint warning.
+"Nobody is signed in" is a legitimate *answer* to "who is signed in?", so the auth query resolves
+with `null` instead of entering an error state — which is what lets a guard render a redirect
+rather than an error boundary. Do not copy this into other providers: everywhere else, a `401`
+means something went wrong and should propagate.
 
 ---
 
-## 8. `src/common/` — the shared layer
+## 8. Contexts (orientation only)
 
-| Folder / file | Holds |
-|---|---|
-| `components/` | Shell and shared UI: navigation (panels, nav bars, menus), the heavy persistent widget, tables, `ui/` primitives, modals, the providers from §5, feature-flag and channel wrappers, unsaved-changes machinery, error fallbacks |
-| `hooks/` | The `useData/` family, search-param access, feature flags, tenant context (`useGetTenantIdParams`, current-channel/type helpers), navigation and unsaved-changes guards, hover prefetch |
-| `actions/` | `server-only` prefetch helpers (plain + cursor-paginated) |
-| `data/` | Cross-domain fetchers that belong to no single context: feature flags, documents, notes, legal copy |
-| `store/` | Zustand stores for shell state: panel collapse, unsaved changes, floating-UI obstacles |
-| `realtime/` | Generic realtime dispatchers; the socket itself belongs to its own context |
-| `util/` | `api.fetch*.ts` — **the single fetch choke point** — plus `getQueryClient`, `dehydrateRequest`, auth helpers, logging, toasts, error-reporter options, persisted-query helpers |
-| `_domain/` | App-wide enums and schemas: channel, forbidden codes, return-URL and safe-URL schemas |
-| `types/` | Shared types, including the user/role/permission unions and role-family groupings |
-| `constants*.ts` | `constants.ts` (routes, cookie keys, HTTP codes) plus `.env`, `.env.server`, `.cache`, `.data.provider`, `.prefetch.provider`, `.broadcastQueries` |
-| `plugins/` · `fonts/` · `cssvar.ts` | Tailwind plugins, self-hosted fonts, the CSS-variable map |
-
-`common/` is a *shell*, not a dumping ground: something belongs here only when
-two or more contexts use it, or the root layout does. Anything used by exactly
-one context belongs in that context.
-
----
-
-## 9. Domain folders (orientation only)
-
-Each `src/context.<name>/` is a bounded context with the same internal shape —
-`_domain/`, `components/`, `data/`, `hooks/`, `store/`, `util/`, `constants/`,
-with tests and mocks beside the code. The rules for working inside one are in
+Each `src/context.<name>/` is a bounded context with the same internal shape — `_domain/`,
+`data/`, `hooks/`, `components/`. The rules for working inside one are in
 [layered-architecture.md](layered-architecture.md).
 
-Two kinds of context are imported by the **shell itself**, not just by pages, and
-are worth naming explicitly in your copy of this document: the one that owns
-**auth** (middleware, cookies, CSP, login flows) and the one that owns the
-**realtime socket**.
-
----
-
-## 10. Adding a page: checklist
-
-1. Create `app/<group>/<path>/page.tsx` and keep it thin — render a component
-   from the owning `context.*`.
-2. **Add the path to the right allow-list** in `common/constants.ts`
-   (`TENANT_ROUTES` / `INTERNAL_ROUTES` / `UNPROTECTED_ROUTES`). If it needs a
-   role or permission, add an ordered entry to the finer-rules list.
-3. If it introduces a new top-level prefix, add it to the `matcher` in
-   `src/middleware.ts` — otherwise auth and CSP never run for it.
-4. To server-render data, register the fetcher in
-   `constants.prefetch.provider.ts` and `prefetchQuery` it in the nearest layout
-   or page, inside a `HydrationBoundary`.
-5. Decide whether the page belongs **inside the shell** (the `(shell)` group) or
-   needs its own frame (a `(standalone)` group), and say which in the PR.
-6. Run typecheck, lint and tests — and check the page both cold (full reload) and
-   warm (in-app navigation): the two paths hit different loading boundaries.
+`context.auth/` is the one the **shell itself** imports: the guards call its `useAuth` and
+`useAuthConfig`. That is the single sanctioned dependency from `app/` into a context's hooks, and
+it is why auth is the context to read first.

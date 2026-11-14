@@ -1,52 +1,49 @@
 ---
 paths:
-  - "**/*.{ts,tsx,js,jsx}"
+  - "**/*.{ts,tsx}"
 ---
 
-# WebSocket
+# Realtime / WebSockets
 
-Applies when a feature needs realtime feedback and the frontend talks to a Laravel backend over
-broadcasting — typically Laravel Echo with a Pusher-compatible broadcaster.
+**There is no realtime in this project.** No Laravel Echo, no Pusher, no broadcaster, no socket —
+and `cocktail-bar-api` broadcasts nothing. Read this before adding the first channel, and note
+that every piece of it is a new dependency needing approval.
 
-Channel names and event names are a **contract shared with the backend**. Both sides must use
-identical keys, so changing one without the other silently breaks the feature at runtime rather
-than at build time.
+Applies when this app would subscribe to `cocktail-bar-api` over broadcasting — typically Laravel
+Echo against a Pusher-compatible broadcaster.
 
-## How it works
+Channel and event names are a **contract shared with the backend**. Both sides must use identical
+keys, so renaming one without the other breaks the feature silently at runtime rather than loudly
+at build time. That makes it exactly the kind of cross-repo change the root `CLAUDE.md` says to
+call out in the PR.
 
-Locate the project's existing broadcast layer before adding anything — it is normally a single
-module that owns connection setup, and you should extend it rather than calling `new Echo` from a
-component.
+## Shape to build
 
-- **Connection** — one place asserts/creates the connection with the configured broadcaster.
-  Reuse it; never open a second connection per component.
-- **Authentication** — private channels require an authorizer, which posts to the backend's
-  broadcasting auth endpoint with the session cookies and CSRF token and exchanges them for a
-  channel auth token. If the project already has an authorizer, route new channels through it.
-- **Declared channels and events** — channel and event names should be declared as types in one
-  place, not written as inline string literals at each call site, so a rename is a type error.
-- **Subscription** — subscribe through the project's broadcast hook rather than touching the
-  connection directly. One hook call opens the channel and listens for the named event.
-
-Shape of a subscription:
-
-```tsx
-useBroadcast({
-  channelId: CHANNEL_IDS.someResource,
-  channel: `some-resource.${resourceId}`,
-  event: EVENTS.someResourceUpdated,
-  onMessage: (data) => {
-    /* handle the payload the backend dispatched for that channel */
-  },
-});
-```
+- **One module owns the connection.** Create it once and reuse it; never `new Echo` from a
+  component. A second connection per component multiplies the server's subscriber count and the
+  browser's open sockets.
+- **Private channels need an authorizer** that posts to the API's broadcasting auth endpoint with
+  the session cookie and CSRF token, and exchanges them for a channel token. That request must go
+  through `fetchApi`, for the same reasons every other request does.
+- **Declare channel and event names in one place** as typed consts, so a rename is a type error
+  rather than a dead subscription.
+- **Subscribe through one hook**, which owns subscribe-on-mount and unsubscribe-on-cleanup. If you
+  find yourself managing listeners by hand in a component, you have bypassed it.
 
 ## Rules
 
-- A channel is scoped to a single resource instance — include the resource ID in the channel name
-  so a user only receives events for records they are authorised to see.
-- Realtime is an **enhancement, not a source of truth**. Treat an event as a signal to refetch or
-  patch cached state, and make sure the feature still works correctly if the socket never
-  connects.
-- Always unsubscribe on unmount — the project's hook should handle this, so if you find yourself
-  managing listeners by hand, that is a sign you bypassed it.
+- **Scope a channel to one resource instance** — include the id in the channel name, so a user
+  only receives events for records they are authorised to see. A broad channel is an
+  authorisation bug delivered over a socket.
+- **Realtime is an enhancement, never a source of truth.** Treat an event as a signal to
+  `invalidateQueries`, and let TanStack Query refetch. Writing the event payload straight into the
+  cache means trusting a message you did not validate with a Zod schema, and in this app the
+  server owns every decision that matters.
+- **The feature must work correctly if the socket never connects.** Flaky networks, blocked
+  WebSockets on corporate proxies and a cold backend are all normal. Build the polling or
+  on-focus-refetch path first and layer realtime on top.
+- **Always unsubscribe on unmount**, and remember `StrictMode` double-invokes effects in
+  development — a subscription without cleanup shows up as duplicate handlers, which looks like
+  the server sending each event twice.
+- A socket event that would make this app re-rank or re-score anything is still forbidden. It can
+  tell the app *that* something changed; the API still decides *what* the new answer is.

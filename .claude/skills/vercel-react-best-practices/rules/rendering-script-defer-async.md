@@ -7,62 +7,57 @@ tags: rendering, script, defer, async, performance
 
 ## Use defer or async on Script Tags
 
-**Impact: HIGH (eliminates render-blocking)**
+A classic `<script src>` with neither attribute blocks HTML parsing while it downloads and
+executes, delaying First Contentful Paint.
 
-Script tags without `defer` or `async` block HTML parsing while the script downloads and executes. This delays First Contentful Paint and Time to Interactive.
+- **`defer`** — downloads in parallel, executes after parsing, preserves order
+- **`async`** — downloads in parallel, executes as soon as it is ready, no order guarantee
+- **`type="module"` — deferred by default**, which is why `index.html`'s single bundle entry needs
+  no attribute:
 
-- **`defer`**: Downloads in parallel, executes after HTML parsing completes, maintains execution order
-- **`async`**: Downloads in parallel, executes immediately when ready, no guaranteed order
-
-Use `defer` for scripts that depend on DOM or other scripts. Use `async` for independent scripts like analytics.
-
-**Incorrect (blocks rendering):**
-
-```tsx
-export default function Document() {
-  return (
-    <html>
-      <head>
-        <script src="https://example.com/analytics.js" />
-        <script src="/scripts/utils.js" />
-      </head>
-      <body>{/* content */}</body>
-    </html>
-  )
-}
+```html
+<script type="module" src="/src/main.tsx"></script>
 ```
 
-**Correct (non-blocking):**
+Use `defer` for scripts that need the DOM or depend on another script; `async` for independent
+ones like analytics.
 
-```tsx
-export default function Document() {
-  return (
-    <html>
-      <head>
-        {/* Independent script - use async */}
-        <script src="https://example.com/analytics.js" async />
-        {/* DOM-dependent script - use defer */}
-        <script src="/scripts/utils.js" defer />
-      </head>
-      <body>{/* content */}</body>
-    </html>
-  )
-}
+**Incorrect (blocks the parser):**
+
+```html
+<head>
+    <script src="https://example.com/analytics.js"></script>
+</head>
 ```
 
-**Note:** In Next.js, prefer the `next/script` component with `strategy` prop instead of raw script tags:
+**Correct:**
 
-```tsx
-import Script from 'next/script'
-
-export default function Page() {
-  return (
-    <>
-      <Script src="https://example.com/analytics.js" strategy="afterInteractive" />
-      <Script src="/scripts/utils.js" strategy="beforeInteractive" />
-    </>
-  )
-}
+```html
+<head>
+    <script src="https://example.com/analytics.js" async></script>
+</head>
 ```
 
-Reference: [MDN - Script element](https://developer.mozilla.org/en-US/docs/Web/HTML/Element/script#defer)
+### The one deliberate exception in this project
+
+`index.html` contains a small **blocking inline** script that reads the stored appearance and adds
+`.dark` to `<html>`:
+
+```html
+<script>
+    (function () {
+        try {
+            const appearance = localStorage.getItem('appearance') ?? 'system'
+            // … adds 'dark' to documentElement
+        } catch {}
+    })()
+</script>
+```
+
+This one **must** block, and must stay inline and in `<head>`. Defer it and the page paints in the
+light theme before the class lands, producing exactly the flash the script exists to prevent — see
+[rendering-hydration-no-flicker.md](rendering-hydration-no-flicker.md). It is a handful of
+synchronous statements with no network access, so it costs microseconds, and the `try/catch`
+covers browsers with storage blocked.
+
+Reference: [MDN — script element](https://developer.mozilla.org/en-US/docs/Web/HTML/Element/script#defer)

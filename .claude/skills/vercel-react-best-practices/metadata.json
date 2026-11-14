@@ -1,15 +1,16 @@
 {
-  "version": "1.0.0",
+  "version": "1.0.0-spa",
   "organization": "Vercel Engineering",
+  "upstreamVersion": "1.0.0",
   "date": "January 2026",
-  "abstract": "Comprehensive performance optimization guide for React and Next.js applications, designed for AI agents and LLMs. Contains 40+ rules across 8 categories, prioritized by impact from critical (eliminating waterfalls, reducing bundle size) to incremental (advanced patterns). Each rule includes detailed explanations, real-world examples comparing incorrect vs. correct implementations, and specific impact metrics to guide automated refactoring and code generation.",
+  "tailoredFor": "cocktail-bar-web — client-rendered React SPA (Vite, React Router, TanStack Query)",
+  "abstract": "Performance optimization guide for React applications, designed for AI agents and LLMs. This copy is a tailored fork of Vercel Engineering's React Best Practices: 58 rules across 7 categories, prioritized by impact from critical (eliminating waterfalls, reducing bundle size) to incremental (advanced patterns). The upstream server-* category and other Next.js-specific rules have been removed, and the remainder retargeted to a client-rendered SPA with no server runtime. Each rule includes an explanation, incorrect and correct examples, and the failure mode it prevents.",
   "references": [
     "https://react.dev",
-    "https://nextjs.org",
-    "https://swr.vercel.app",
-    "https://github.com/shuding/better-all",
-    "https://github.com/isaacs/node-lru-cache",
-    "https://vercel.com/blog/how-we-optimized-package-imports-in-next-js",
+    "https://vite.dev",
+    "https://tanstack.com/query/latest",
+    "https://reactrouter.com",
+    "https://developer.mozilla.org/en-US/docs/Web/Performance",
     "https://vercel.com/blog/how-we-made-the-vercel-dashboard-twice-as-fast"
   ]
 }
