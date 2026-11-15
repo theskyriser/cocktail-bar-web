@@ -3,4 +3,5 @@ export const API_ENDPOINTS = {
     login: '/login',
     logout: '/logout',
     user: '/api/user',
+    bar: '/api/bar',
 } as const;

@@ -1,12 +1,34 @@
-import { BookOpen, FolderGit2, LayoutGrid } from 'lucide-react';
+import {
+    BookOpen,
+    FolderGit2,
+    Martini,
+    ScrollText,
+    ShoppingCart,
+    Wine,
+} from 'lucide-react';
 import { ROUTES } from '@/app/routes';
 import type { NavItem } from '@/common/types';
 
 export const mainNavItems: NavItem[] = [
     {
-        title: 'Home',
-        href: ROUTES.home,
-        icon: LayoutGrid,
+        title: 'Bar',
+        href: ROUTES.bar,
+        icon: Wine,
+    },
+    {
+        title: 'Recipes',
+        href: ROUTES.recipes,
+        icon: ScrollText,
+    },
+    {
+        title: 'Make',
+        href: ROUTES.make,
+        icon: Martini,
+    },
+    {
+        title: 'Shop',
+        href: ROUTES.shop,
+        icon: ShoppingCart,
     },
 ];
 
