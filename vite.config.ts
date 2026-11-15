@@ -47,4 +47,9 @@ export default defineConfig({
             stylesheet: 'src/common/styles/app.css',
         },
     },
+    test: {
+        include: ['src/**/*.{test,spec}.{ts,tsx}'],
+        environment: 'jsdom',
+        setupFiles: ['./src/test-setup.ts'],
+    },
 });
